@@ -74,18 +74,13 @@ export async function runRestore(opts: RestoreOptions): Promise<RestoreResult> {
   const projectName = sanitizeProjectName(manifest.project.name);
   const wait = (opts.waitForRunningSec ?? 30) * 1000;
 
-  log.out(`[debug-trace] runRestore start. services=${manifest.services.length}`);
-  log.out(`[debug-trace] manifest.services=${JSON.stringify(manifest.services.map((s: ManifestService) => ({ name: s.name, kind: s.kind, db: s.databaseType })))}`);
-
   log.step(0, `Creando proyecto en Dokploy: ${projectName}`);
 
   // 1) Crear proyecto
-  log.out(`[debug-trace] Llamando dokployCreateProject...`);
   let projectId: string;
   try {
     projectId = await dokployCreateProject(conn, { name: projectName });
     log.ok(`Proyecto creado: ${projectId}`);
-    log.out(`[debug-trace] dokployCreateProject OK. projectId=${projectId}`);
   } catch (e) {
     throw new Error(
       `No pude crear el proyecto en Dokploy: ${(e as Error).message}`
@@ -94,13 +89,10 @@ export async function runRestore(opts: RestoreOptions): Promise<RestoreResult> {
 
   // 2) Subir bundle al Contabo
   log.step(1, "Subiendo bundle al Contabo");
-  log.out(`[debug-trace] remoteTmp=${`/tmp/restore-${bundle.bundleDir}`}`);
   const remoteTmp = `/tmp/restore-${bundle.bundleDir}`;
   await ssh.exec(`rm -rf ${remoteTmp} && mkdir -p ${remoteTmp}`);
   const remoteBundleTar = `${remoteTmp}/bundle.tar.gz`;
-  log.out(`[debug-trace] Subiendo bundle al Contabo...`);
   await ssh.uploadFile(tarGzPath, remoteBundleTar);
-  log.out(`[debug-trace] Bundle subido. Extrayendo en Contabo...`);
   await ssh.exec(
     `mkdir -p ${remoteTmp}/x && tar -xzf ${remoteBundleTar} -C ${remoteTmp}/x`
   );
@@ -112,7 +104,6 @@ export async function runRestore(opts: RestoreOptions): Promise<RestoreResult> {
   for (let i = 0; i < manifest.services.length; i++) {
     const svc = manifest.services[i];
     const stepNo = i + 1;
-    log.out(`[debug-trace] Servicio ${stepNo}/${manifest.services.length}: ${svc.name} (${svc.kind})`);
     try {
       const result = await createAndProvisionService({
         conn,

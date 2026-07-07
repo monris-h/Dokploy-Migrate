@@ -6,7 +6,7 @@
  */
 
 import { runBackup } from "./commands/backup.js";
-import { runRestore } from "./commands/restore.js";
+import { runRestoreCli } from "./commands/restore.js";
 import { runServers } from "./commands/servers.js";
 
 const HELP = `
@@ -60,7 +60,7 @@ async function main() {
       await runBackup(rest);
       break;
     case "restore":
-      await runRestore(rest);
+      await runRestoreCli(rest);
       break;
     case "migrate":
       await runBackup(["--yes", ...rest]);

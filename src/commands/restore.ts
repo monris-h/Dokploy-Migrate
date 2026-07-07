@@ -193,7 +193,7 @@ export async function runRestoreFlow(opts: RestoreFlowOpts): Promise<void> {
 
 // --------- CLI entry ---------
 
-export async function runRestore(args: string[]): Promise<void> {
+export async function runRestoreCli(args: string[]): Promise<void> {
   await runRestoreFlow({ parseArgs: args });
 }
 
