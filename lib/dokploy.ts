@@ -118,50 +118,26 @@ export async function listServices(
   log(`projectId: ${projectId}`);
 
   // Paso 1: detectar project + environments via /api/project.one
-  const { project, environments, raw } = await detectProjectAndEnvs(conn, projectId);
+  const { project, environments } = await detectProjectAndEnvs(conn, projectId);
   const envIds = environments.map((e) => e.environmentId);
   log(`project "${project.name}" environments: [${envIds.join(", ")}]`);
 
-  // Paso 2 (PRINCIPAL): extraer servicios directamente de environments[].
-  // En Dokploy moderno, /api/project.one devuelve cada environment con sus
-  // services colgando: environments[i].applications, .postgres, .mysql,
-  // .mariadb, .mongo, .redis, .compose. Esto es lo correcto.
+  // === Estrategia A: services dentro de project.one.environments[] ===
   const out: ServiceSummary[] = [];
   const seen = new Set<string>();
-  const seenEnvKeys = new Set<string>(); // para reportar campos que NO se reconocieron
+  const seenEnvKeys = new Set<string>();
 
   for (const env of environments) {
-    log(`  env ${env.environmentId} - extrayendo services:`);
-    for (const entry of COLLECTION_KEYS) {
-      const items = (env.raw[entry.key] as Array<Record<string, unknown>>) ?? [];
-      if (items.length === 0) continue;
-      log(`    ${entry.key}: ${items.length} items`);
-      for (const it of items) {
-        const id = String(
-          it[entry.idField] ?? it["id"] ?? it["Id"] ?? ""
-        );
-        if (!id) continue;
-        const k = `${entry.kind}:${id}`;
-        if (seen.has(k)) continue;
-        seen.add(k);
-        out.push({
-          kind: entry.kind,
-          id,
-          name: String(it["name"] ?? it["appName"] ?? it["Name"] ?? "?"),
-          envId: env.environmentId,
-          projectId,
-          databaseType: entry.databaseType,
-        });
-      }
-    }
-    // Detectar campos desconocidos (que parezcan colecciones)
-    for (const k of Object.keys(env.raw)) {
-      if (COLLECTION_KEYS.some((c) => c.key === k)) continue;
-      const v = (env.raw as Record<string, unknown>)[k];
-      if (Array.isArray(v) && v.length > 0 && typeof v[0] === "object") {
-        seenEnvKeys.add(k);
-      }
-    }
+    log(`  [A] env ${env.environmentId} - extrayendo desde project.one.environments[]:`);
+    const { services, unknownKeys } = extractServicesFromEnv(
+      env.raw,
+      env.environmentId,
+      projectId,
+      seen,
+      log
+    );
+    out.push(...services);
+    for (const k of unknownKeys) seenEnvKeys.add(k);
   }
 
   if (seenEnvKeys.size > 0) {
@@ -169,9 +145,28 @@ export async function listServices(
     log(`  campos no reconocidos en env (parecian colecciones): ${keys.join(", ")}`);
   }
 
-  // Paso 3 (FALLBACK): si 0 desde environments[], probar endpoints .all
+  // === Estrategia B: si A=0, llamar /api/environment.one por cada envId ===
+  if (out.length === 0 && envIds.length > 0) {
+    log(`0 desde project.one; probando /api/environment.one por environmentId...`);
+    for (const envId of envIds) {
+      try {
+        const envServices = await listServicesByEnvironment(conn, envId, projectId);
+        log(`  [B] env ${envId} -> ${envServices.length} services`);
+        for (const s of envServices) {
+          const k = `${s.kind}:${s.id}`;
+          if (seen.has(k)) continue;
+          seen.add(k);
+          out.push(s);
+        }
+      } catch (e) {
+        log(`  [B] env ${envId} FAIL: ${(e as Error).message}`);
+      }
+    }
+  }
+
+  // === Estrategia C: fallback a endpoints .all con filtro local ===
   if (out.length === 0) {
-    log(`0 desde project.one; fallback a endpoints .all`);
+    log(`0 desde environment.one; fallback a endpoints .all`);
     const matches = (it: Record<string, unknown>): boolean => {
       const projectFields = ["projectId", "projectID", "ProjectId"];
       if (projectFields.some((f) => it[f] === projectId)) return true;
@@ -191,7 +186,7 @@ export async function listServices(
     ]) {
       try {
         const items = await fetcher();
-        log(`${type}.all: ${items.length} total`);
+        log(`  [C] ${type}.all: ${items.length} total`);
         for (const s of items.filter((x) =>
           matches(x as unknown as Record<string, unknown>)
         )) {
@@ -201,7 +196,7 @@ export async function listServices(
           out.push(s);
         }
       } catch (e) {
-        log(`${type}.all FAIL: ${(e as Error).message}`);
+        log(`  [C] ${type}.all FAIL: ${(e as Error).message}`);
       }
     }
   }
@@ -209,7 +204,6 @@ export async function listServices(
   log(`total: ${out.length} servicios`);
 
   if (out.length === 0) {
-    // Dump clave-valor del primer environment para entender la estructura
     let envShape = "(none)";
     if (environments.length > 0) {
       const env0 = environments[0];
@@ -229,6 +223,103 @@ export async function listServices(
   }
 
   return out;
+}
+
+/**
+ * Lista services de un environment especifico via /api/environment.one.
+ * Funcion independiente: si el caller ya sabe el environmentId (ej. desde
+ * la UI de Dokploy), puede llamarla directo sin pasar por projectId.
+ */
+export async function listServicesByEnvironment(
+  conn: Connection,
+  environmentId: string,
+  projectId?: string
+): Promise<ServiceSummary[]> {
+  const verbose = process.env.DEBUG_LIST_SERVICES === "1";
+  const log = (m: string) => {
+    if (verbose) process.stdout.write(`  [listServicesByEnvironment] ${m}\n`);
+  };
+
+  log(`environmentId: ${environmentId}`);
+
+  let data: Record<string, unknown>;
+  try {
+    data = await dokployFetch<Record<string, unknown>>(
+      conn,
+      `/api/environment.one?environmentId=${encodeURIComponent(environmentId)}`
+    );
+  } catch (e) {
+    log(`environment.one FAIL: ${(e as Error).message}`);
+    throw e;
+  }
+
+  const envId = String(data.environmentId ?? data.id ?? environmentId) || environmentId;
+  const pid =
+    projectId ?? (String(data.projectId ?? data.project ?? "") || undefined);
+
+  const seen = new Set<string>();
+  const { services, unknownKeys } = extractServicesFromEnv(
+    data,
+    envId,
+    pid,
+    seen,
+    log
+  );
+
+  if (unknownKeys.length > 0) {
+    log(`  campos no reconocidos: ${unknownKeys.join(", ")}`);
+  }
+  log(`  -> ${services.length} services`);
+
+  return services;
+}
+
+/**
+ * Extrae services de un objeto Dokploy que representa un environment
+ * (ya sea desde /api/project.one.environments[i] o desde /api/environment.one).
+ * Busca las colecciones estandar: applications, postgres, mysql, mariadb,
+ * mongo, redis, compose.
+ */
+function extractServicesFromEnv(
+  envRaw: Record<string, unknown>,
+  envId: string,
+  projectId: string | undefined,
+  seen: Set<string>,
+  log: (m: string) => void
+): { services: ServiceSummary[]; unknownKeys: string[] } {
+  const services: ServiceSummary[] = [];
+  const unknownKeys: string[] = [];
+
+  for (const entry of COLLECTION_KEYS) {
+    const items = (envRaw[entry.key] as Array<Record<string, unknown>>) ?? [];
+    if (items.length === 0) continue;
+    log(`    ${entry.key}: ${items.length} items`);
+    for (const it of items) {
+      const id = String(it[entry.idField] ?? it["id"] ?? it["Id"] ?? "");
+      if (!id) continue;
+      const k = `${entry.kind}:${id}`;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      services.push({
+        kind: entry.kind,
+        id,
+        name: String(it["name"] ?? it["appName"] ?? it["Name"] ?? "?"),
+        envId,
+        projectId,
+        databaseType: entry.databaseType,
+      });
+    }
+  }
+
+  for (const k of Object.keys(envRaw)) {
+    if (COLLECTION_KEYS.some((c) => c.key === k)) continue;
+    const v = (envRaw as Record<string, unknown>)[k];
+    if (Array.isArray(v) && v.length > 0 && typeof v[0] === "object") {
+      unknownKeys.push(k);
+    }
+  }
+
+  return { services, unknownKeys };
 }
 
 /**
