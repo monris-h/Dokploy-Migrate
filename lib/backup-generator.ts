@@ -37,37 +37,52 @@ export function generateBackupScript(plan: BackupPlan): string {
   lines.push(`docker ps -a --format '  {{.Names}}  | project={{.Label "com.docker.compose.project"}}  | service={{.Label "com.docker.compose.service"}}' 2>/dev/null || docker ps -a --format '  {{.Names}}'`);
   lines.push("");
 
-  // resolve_container - Dokploy usa Docker Swarm, los nombres tienen hash
-  // aleatorio (ej: onefit-web-wj4f0j.1.ryf39ttz79fzeyxt1i0j50m3a).
-  // No se puede hardcodear; hay que hacer grep por prefijo.
+  // resolve_container - Dokploy usa Docker Swarm con nombres tipo
+  // onefit-web-wj4f0j.1.ryf39ttz79fzeyxt1i0j50m3a. El appName que devuelve
+  // la API puede ser 'web' (corto) o 'onefit-db-e19t4w' (task name con
+  // prefijo del proyecto). Manejamos ambos casos.
   lines.push(`resolve_container() {
   local service="$1"          # nombre legible (ej: "web")
-  local appname="\${2:-}"      # appName/slug exacto (ej: "web" o "onefit-postgres"); opcional
+  local appname="\${2:-}"      # appName/slug exacto; puede tener o no el slug del proyecto
 
-  # Estrategia 1: grep por prefijo <PROJECT_SLUG>-<servicio> o <PROJECT_SLUG>-<appname>
-  # Esto matchea nombres como onefit-web-wj4f0j.1.ryf39ttz79fzeyxt1i0j50m3a
+  # Construir lista de prefijos a probar (orden importa: especifico antes que generico)
   local prefixes=()
-  if [ -n "\${appname}" ] && [ "\${appname}" != "\${service}" ]; then
-    prefixes+=("\${PROJECT_SLUG}-\${appname}" "\${service}")
-  else
-    prefixes+=("\${PROJECT_SLUG}-\${service}")
+
+  if [ -n "\${appname}" ]; then
+    if [[ "\${appname}" == "\${PROJECT_SLUG}-"* ]]; then
+      # appname ya incluye el slug (ej: onefit-db-e19t4w), usarlo directo
+      prefixes+=("\${appname}")
+    else
+      # appname es corto (ej: web, db), probar con y sin slug
+      prefixes+=("\${PROJECT_SLUG}-\${appname}" "\${appname}")
+    fi
   fi
-  prefixes+=("\${PROJECT_ID}-\${service}" "\${PROJECT_SLUG}_\${service}")
+
+  if [ -n "\${service}" ] && [ "\${service}" != "\${appname}" ]; then
+    if [[ "\${service}" == "\${PROJECT_SLUG}-"* ]]; then
+      prefixes+=("\${service}")
+    else
+      prefixes+=("\${PROJECT_SLUG}-\${service}")
+    fi
+  fi
+
+  # Fallbacks finales
+  prefixes+=("\${PROJECT_ID}-\${service}" "\${PROJECT_ID}-\${appname}")
 
   for prefix in "\${prefixes[@]}"; do
+    [ -z "\${prefix}" ] && continue
     local hit
     hit=$(docker ps -a --format '{{.Names}}' | grep -F "^\${prefix}" | head -n1 || true)
     if [ -n "\${hit}" ]; then echo "\${hit}"; return 0; fi
   done
 
-  # Estrategia 2: filtrar todos los containers del proyecto por label
-  # (Dokploy pone labels com.docker.compose.project y com.docker.compose.service)
+  # Estrategia 2: filtrar por label del proyecto + match por service
   local by_label
-  by_label=$(docker ps -a --filter "label=com.docker.compose.project=\${PROJECT_SLUG}" --format '{{.Names}} {{.Label "com.docker.compose.service"}}' | grep -E " \${appname:-\${service}}$" | awk '{print $1}' | head -n1 || true)
+  by_label=$(docker ps -a --filter "label=com.docker.compose.project=\${PROJECT_SLUG}" --format '{{.Names}} {{.Label "com.docker.compose.service"}}' | grep -E "( \${appname}\$| \${service}\$|-\${appname}\$|-\${service}\$)" | awk '{print \$1}' | head -n1 || true)
   if [ -n "\${by_label}" ]; then echo "\${by_label}"; return 0; fi
 
-  # Estrategia 3: fallback grep flexible (case-insensitive) - ultimo recurso
-  docker ps -a --format '{{.Names}}' | grep -i "\${service}" | grep -F "\${PROJECT_SLUG}" | head -n1 || true
+  # Estrategia 3: grep flexible - ultimo recurso
+  docker ps -a --format '{{.Names}}' | grep -F "\${PROJECT_SLUG}-" | grep -iE "\${appname:-\${service}}" | head -n1 || true
 }
 `);
   lines.push("");
