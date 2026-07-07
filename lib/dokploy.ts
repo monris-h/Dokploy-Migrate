@@ -766,6 +766,10 @@ async function createDb(
   const idKey = `${type}Id`;
   const slug = slugName(opts.name);
 
+  // Extraer databaseUser y databasePassword del env (si vienen del bundle)
+  const envVars = opts.env ?? {};
+  const dbCreds = extractDbCredentials(type, envVars);
+
   const { ids } = await createViaEndpoint(conn, {
     restPath: `/api/${type}.create`,
     trpcPath: `/api/trpc/${type}.create?batch=1`,
@@ -774,8 +778,9 @@ async function createDb(
       projectId: opts.projectId,
       environmentId: opts.environmentId,
       appName: slug,
-      // databaseName requerido por la API moderna (nombre interno de la BD)
       databaseName: slug,
+      databaseUser: dbCreds.user,
+      databasePassword: dbCreds.password,
       sourceType: opts.image || defaultImage ? "image" : "image",
       dockerImage: opts.image ?? defaultImage,
       env: envString,
@@ -784,6 +789,27 @@ async function createDb(
     idKeys: [idKey],
   });
   return ids[idKey];
+}
+
+/**
+ * Saca user/password de las env vars del container segun el tipo de BD.
+ * Si no estan, devuelve defaults razonables.
+ */
+function extractDbCredentials(
+  type: DatabaseType,
+  env: Record<string, string>
+): { user: string; password: string } {
+  const defaults: Record<DatabaseType, { user: string; password: string; userEnv: string[]; passEnv: string[] }> = {
+    postgres: { user: "postgres", password: "postgres", userEnv: ["POSTGRES_USER"], passEnv: ["POSTGRES_PASSWORD", "POSTGRES_ROOT_PASSWORD"] },
+    mysql:    { user: "root",     password: "root",     userEnv: ["MYSQL_USER", "MYSQL_ROOT_USER"], passEnv: ["MYSQL_ROOT_PASSWORD", "MYSQL_PASSWORD"] },
+    mariadb:  { user: "root",     password: "root",     userEnv: ["MARIADB_USER", "MARIADB_ROOT_USER"], passEnv: ["MARIADB_ROOT_PASSWORD", "MARIADB_PASSWORD"] },
+    mongo:    { user: "root",     password: "root",     userEnv: ["MONGO_INITDB_ROOT_USERNAME", "MONGO_USER"], passEnv: ["MONGO_INITDB_ROOT_PASSWORD", "MONGO_PASSWORD", "MONGO_ROOT_PASSWORD"] },
+    redis:    { user: "default",  password: "",         userEnv: ["REDIS_USER"], passEnv: ["REDIS_PASSWORD"] },
+  };
+  const d = defaults[type];
+  const user = d.userEnv.map((k) => env[k]).find((v) => v) ?? d.user;
+  const password = d.passEnv.map((k) => env[k]).find((v) => v) ?? d.password;
+  return { user, password };
 }
 
 async function deployDb(conn: Connection, type: DatabaseType, id: string): Promise<void> {
