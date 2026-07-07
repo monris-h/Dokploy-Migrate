@@ -631,10 +631,35 @@ export async function dokployCreateProject(
   return ids.projectId ?? (ids as Record<string, string>).id ?? "";
 }
 
+/**
+ * Devuelve el environmentId por defecto (el primero) de un proyecto.
+ * La API moderna de Dokploy requiere que cada service se cree DENTRO de
+ * un environmentId, no solo dentro de projectId.
+ */
+export async function getProjectDefaultEnvironmentId(
+  conn: Connection,
+  projectId: string
+): Promise<string> {
+  const data = await dokployFetch<Record<string, unknown>>(
+    conn,
+    `/api/project.one?projectId=${encodeURIComponent(projectId)}`
+  );
+  const envs = (data.environments as Array<Record<string, unknown>>) ?? [];
+  const id = String(envs[0]?.environmentId ?? envs[0]?.id ?? "");
+  if (!id) {
+    throw new Error(
+      `Proyecto ${projectId} no tiene environments. No se pueden crear services.`
+    );
+  }
+  return id;
+}
+
 // ------- Application (apps / web / Next, etc.) -------
 
 export type CreateApplicationOpts = {
   projectId: string;
+  /** environmentId dentro del proyecto (requerido por API moderna). */
+  environmentId: string;
   name: string;
   image?: string;
   /** Variables de entorno que se aplican al servicio. */
@@ -654,6 +679,7 @@ export async function dokployCreateApplication(
     body: {
       name: opts.name,
       projectId: opts.projectId,
+      environmentId: opts.environmentId,
       appName: slugName(opts.name),
       sourceType: opts.image ? "image" : "git",
       dockerImage: opts.image ?? "",
@@ -689,6 +715,8 @@ export async function dokployDeployApplication(
 
 export type CreateDbOpts = {
   projectId: string;
+  /** environmentId dentro del proyecto (requerido por API moderna). */
+  environmentId: string;
   name: string;
   image?: string;
   env?: Record<string, string>;
@@ -704,6 +732,7 @@ async function createDb(
 ): Promise<string> {
   const envString = opts.env ? JSON.stringify(opts.env) : "";
   const idKey = `${type}Id`;
+  const slug = slugName(opts.name);
 
   const { ids } = await createViaEndpoint(conn, {
     restPath: `/api/${type}.create`,
@@ -711,7 +740,10 @@ async function createDb(
     body: {
       name: opts.name,
       projectId: opts.projectId,
-      appName: slugName(opts.name),
+      environmentId: opts.environmentId,
+      appName: slug,
+      // databaseName requerido por la API moderna (nombre interno de la BD)
+      databaseName: slug,
       sourceType: opts.image || defaultImage ? "image" : "image",
       dockerImage: opts.image ?? defaultImage,
       env: envString,

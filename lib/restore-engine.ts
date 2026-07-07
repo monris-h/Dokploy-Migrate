@@ -2,6 +2,7 @@ import path from "node:path";
 import type { Ssh } from "../src/ssh.js";
 import {
   dokployCreateProject,
+  getProjectDefaultEnvironmentId,
   dokployCreateApplication,
   dokployDeployApplication,
   dokployCreatePostgres,
@@ -98,7 +99,12 @@ export async function runRestore(opts: RestoreOptions): Promise<RestoreResult> {
   );
   log.ok(`Bundle disponible en ${remoteTmp}/x/${bundle.bundleDir}`);
 
-  log.step(2, "Creando servicios uno por uno (cada uno como su propia unidad)");
+  // 2b) Obtener el environmentId del proyecto (la API moderna lo requiere)
+  log.step(2, "Obteniendo environmentId del proyecto");
+  const environmentId = await getProjectDefaultEnvironmentId(conn, projectId);
+  log.ok(`environmentId: ${environmentId}`);
+
+  log.step(3, "Creando servicios uno por uno (cada uno como su propia unidad)");
   const serviceResults: RestoreResult["serviceResults"] = {};
 
   for (let i = 0; i < manifest.services.length; i++) {
@@ -110,6 +116,7 @@ export async function runRestore(opts: RestoreOptions): Promise<RestoreResult> {
         ssh,
         svc,
         projectId,
+        environmentId,
         bundle,
         remoteTmp,
         wait,
@@ -146,6 +153,7 @@ type Ctx = {
   ssh: Ssh;
   svc: ManifestService;
   projectId: string;
+  environmentId: string;
   bundle: ExtractedBundle;
   remoteTmp: string;
   wait: number;
@@ -153,7 +161,7 @@ type Ctx = {
 };
 
 async function createAndProvisionService(ctx: Ctx) {
-  const { conn, ssh, svc, projectId, bundle, remoteTmp, wait, step } = ctx;
+  const { conn, ssh, svc, projectId, environmentId, bundle, remoteTmp, wait, step } = ctx;
   const out: { id: string; container?: string; skipped?: boolean } = { id: "" };
 
   const envPath = bundle.paths.envByName[svc.name];
@@ -163,6 +171,7 @@ async function createAndProvisionService(ctx: Ctx) {
   const planLines: string[] = [
     `Tipo:    ${svc.kind === "db" ? `db/${svc.databaseType ?? "?"}` : svc.kind === "compose" ? "compose" : "application"}`,
     `Nombre:  ${svc.name}`,
+    `Env ID:  ${environmentId}`,
     `Imagen:  ${image}`,
     `Env:     ${Object.keys(envVars).length} variable(s) ${Object.keys(envVars).length === 0 ? "(ninguna)" : "(" + Object.keys(envVars).join(", ") + ")"}`,
   ];
@@ -197,6 +206,7 @@ async function createAndProvisionService(ctx: Ctx) {
       case "app": {
         const id = await dokployCreateApplication(conn, {
           projectId,
+          environmentId,
           name: svc.name,
           image,
           env: envVars,
@@ -211,6 +221,7 @@ async function createAndProvisionService(ctx: Ctx) {
           case "postgres":
             out.id = await dokployCreatePostgres(conn, {
               projectId,
+              environmentId,
               name: svc.name,
               image,
               env: envVars,
@@ -220,6 +231,7 @@ async function createAndProvisionService(ctx: Ctx) {
           case "mysql":
             out.id = await dokployCreateMysql(conn, {
               projectId,
+              environmentId,
               name: svc.name,
               image,
               env: envVars,
@@ -229,6 +241,7 @@ async function createAndProvisionService(ctx: Ctx) {
           case "mariadb":
             out.id = await dokployCreateMariadb(conn, {
               projectId,
+              environmentId,
               name: svc.name,
               image,
               env: envVars,
@@ -238,6 +251,7 @@ async function createAndProvisionService(ctx: Ctx) {
           case "mongo":
             out.id = await dokployCreateMongo(conn, {
               projectId,
+              environmentId,
               name: svc.name,
               image,
               env: envVars,
@@ -247,6 +261,7 @@ async function createAndProvisionService(ctx: Ctx) {
           case "redis":
             out.id = await dokployCreateRedis(conn, {
               projectId,
+              environmentId,
               name: svc.name,
               image,
               env: envVars,
