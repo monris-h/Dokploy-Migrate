@@ -584,16 +584,20 @@ function extractIds<TKey extends string>(
 ): Record<TKey, string> {
   const out = {} as Record<TKey, string>;
   if (!r || typeof r !== "object") return out;
-  const visit = (v: unknown) => {
+  const visit = (v: unknown, depth = 0) => {
+    if (depth > 4) return; // limite de seguridad
     if (!v || typeof v !== "object") return;
     const o = v as Record<string, unknown>;
     for (const k of keys) {
       const val = o[k];
       if (typeof val === "string" && !out[k]) out[k] = val;
     }
-    // recursivo limitado a .data y .json
-    if (o.data && typeof o.data === "object") visit(o.data);
-    if (o.json && typeof o.json === "object") visit(o.json);
+    // Recursivo por wrappers tipicos de la API Dokploy
+    if (o.data && typeof o.data === "object") visit(o.data, depth + 1);
+    if (o.json && typeof o.json === "object") visit(o.json, depth + 1);
+    if (o.result && typeof o.result === "object") visit(o.result, depth + 1);
+    if (o.project && typeof o.project === "object") visit(o.project, depth + 1);
+    if (o.environment && typeof o.environment === "object") visit(o.environment, depth + 1);
   };
   visit(r);
   return out;
@@ -604,7 +608,9 @@ export async function dokployCreateProject(
   conn: Connection,
   opts: { name: string; description?: string }
 ): Promise<string> {
-  // Primero: si ya existe un proyecto con ese nombre, reusar
+  // Primero: si ya existe un proyecto con ese nombre, reusar.
+  // (Algunas versiones de Dokploy devuelven /api/project.all vacio,
+  // asi que si falla seguimos al create de todas formas.)
   try {
     const existing = await listProjects(conn);
     const found = existing.find(
@@ -618,17 +624,43 @@ export async function dokployCreateProject(
       }
       return found.projectId;
     }
-  } catch {
-    // si falla el listado, intentar crear igual
+  } catch (e) {
+    if (process.env.DEBUG_DOKPLOY) {
+      process.stderr.write(
+        `[DEBUG_DOKPLOY] listProjects fallo: ${(e as Error).message}\n`
+      );
+    }
   }
 
-  const { ids } = await createViaEndpoint(conn, {
-    restPath: "/api/project.create",
-    trpcPath: "/api/trpc/project.create?batch=1",
-    body: { name: opts.name, description: opts.description ?? "" },
-    idKeys: ["projectId"],
-  });
-  return ids.projectId ?? (ids as Record<string, string>).id ?? "";
+  // Crear (puede generar duplicado si ya existe y project.all no lo mostro)
+  try {
+    const { ids } = await createViaEndpoint(conn, {
+      restPath: "/api/project.create",
+      trpcPath: "/api/trpc/project.create?batch=1",
+      body: { name: opts.name, description: opts.description ?? "" },
+      idKeys: ["projectId"],
+    });
+    const pid = ids.projectId ?? (ids as Record<string, string>).id ?? "";
+    if (pid) return pid;
+  } catch (e) {
+    // Si el POST fallo con 400/409 (proyecto duplicado), intentamos detectar
+    // el existente via /api/project.one?name=X como fallback
+    if (/400|409|already|exists/i.test((e as Error).message)) {
+      try {
+        const data = await dokployFetch<Record<string, unknown>>(
+          conn,
+          `/api/project.one?name=${encodeURIComponent(opts.name)}`
+        );
+        const id = String(data.projectId ?? data.id ?? "");
+        if (id) return id;
+      } catch {
+        // ignore
+      }
+    }
+    throw e;
+  }
+
+  throw new Error(`No pude obtener projectId al crear "${opts.name}".`);
 }
 
 /**
