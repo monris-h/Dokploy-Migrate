@@ -313,6 +313,18 @@ function extractServicesFromEnv(
         envId,
         projectId,
         databaseType: entry.databaseType,
+        image: (it["dockerImage"] as string | undefined) ?? undefined,
+        sourceType: (it["sourceType"] as ServiceSummary["sourceType"]) ?? undefined,
+        repository:
+          (it["repository"] as string | undefined) ??
+          (it["customGitUrl"] as string | undefined) ??
+          undefined,
+        branch:
+          (it["branch"] as string | undefined) ??
+          (it["customGitBranch"] as string | undefined) ??
+          undefined,
+        commit: (it["commit"] as string | undefined) ?? undefined,
+        buildPath: (it["buildPath"] as string | undefined) ?? undefined,
       });
     }
   }
@@ -694,6 +706,14 @@ export type CreateApplicationOpts = {
   environmentId: string;
   name: string;
   image?: string;
+  /** Si viene de git, el repo URL. */
+  repository?: string;
+  /** Branch del repo. */
+  branch?: string;
+  /** Commit SHA del repo (opcional). */
+  commit?: string;
+  /** Path dentro del repo (monorepos). */
+  buildPath?: string;
   /** Variables de entorno que se aplican al servicio. */
   env?: Record<string, string>;
 };
@@ -704,21 +724,31 @@ export async function dokployCreateApplication(
   opts: CreateApplicationOpts
 ): Promise<string> {
   const envString = opts.env ? JSON.stringify(opts.env) : "";
+  const isGit = !!opts.repository && !opts.image;
+
+  const body: Record<string, unknown> = {
+    name: opts.name,
+    projectId: opts.projectId,
+    environmentId: opts.environmentId,
+    appName: slugName(opts.name),
+    sourceType: isGit ? "git" : (opts.image ? "image" : "git"),
+    dockerImage: opts.image ?? "",
+    env: envString,
+    replicas: 1,
+    restartPolicy: "unless-stopped",
+  };
+
+  if (isGit) {
+    body.repository = opts.repository;
+    body.branch = opts.branch ?? "main";
+    if (opts.commit) body.commit = opts.commit;
+    if (opts.buildPath) body.buildPath = opts.buildPath;
+  }
 
   const { ids } = await createViaEndpoint(conn, {
     restPath: "/api/application.create",
     trpcPath: "/api/trpc/application.create?batch=1",
-    body: {
-      name: opts.name,
-      projectId: opts.projectId,
-      environmentId: opts.environmentId,
-      appName: slugName(opts.name),
-      sourceType: opts.image ? "image" : "git",
-      dockerImage: opts.image ?? "",
-      env: envString,
-      replicas: 1,
-      restartPolicy: "unless-stopped",
-    },
+    body,
     idKeys: ["applicationId", "appId"],
   });
   return ids.applicationId ?? ids.appId;

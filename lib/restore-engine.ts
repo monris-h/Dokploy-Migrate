@@ -172,7 +172,9 @@ async function createAndProvisionService(ctx: Ctx) {
     `Tipo:    ${svc.kind === "db" ? `db/${svc.databaseType ?? "?"}` : svc.kind === "compose" ? "compose" : "application"}`,
     `Nombre:  ${svc.name}`,
     `Env ID:  ${environmentId}`,
-    `Imagen:  ${image}`,
+    svc.repository
+      ? `Fuente:  git (${svc.repository}@${svc.branch ?? "main"}${svc.commit ? ` #${String(svc.commit).slice(0, 7)}` : ""})`
+      : `Imagen:  ${image}`,
     `Env:     ${Object.keys(envVars).length} variable(s) ${Object.keys(envVars).length === 0 ? "(ninguna)" : "(" + Object.keys(envVars).join(", ") + ")"}`,
   ];
   if (svc.kind === "db") {
@@ -209,10 +211,21 @@ async function createAndProvisionService(ctx: Ctx) {
           environmentId,
           name: svc.name,
           image,
+          // Si el original se deployaba desde git, pasamos el repo + branch
+          // al create en Contabo para que vuelva a clonar en lugar de pull de imagen.
+          repository: svc.repository ?? undefined,
+          branch: svc.branch ?? undefined,
+          commit: svc.commit ?? undefined,
+          buildPath: svc.buildPath ?? undefined,
           env: envVars,
         });
         out.id = id;
         log.ok(`  application creada: ${id}`);
+        if (svc.repository) {
+          log.out(`    deploy desde git: ${svc.repository}@${svc.branch ?? "main"}`);
+        } else {
+          log.out(`    deploy desde imagen: ${image}`);
+        }
         deployFn = () => dokployDeployApplication(conn, id);
         break;
       }

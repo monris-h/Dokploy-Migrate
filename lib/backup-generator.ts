@@ -331,6 +331,11 @@ function buildManifest(plan: BackupPlan) {
         kind: s.service.kind,
         databaseType: s.service.databaseType ?? null,
         image: s.service.image ?? null,
+        sourceType: s.service.sourceType ?? null,
+        repository: s.service.repository ?? null,
+        branch: s.service.branch ?? null,
+        commit: s.service.commit ?? null,
+        buildPath: s.service.buildPath ?? null,
         selection: s.selection,
       })),
     notes: [
@@ -338,6 +343,7 @@ function buildManifest(plan: BackupPlan) {
       "El bundle tar.gz contiene ./" + plan.bundleName + "/ con manifest.json y RESTORE.md.",
       "Los .env del container estan en services/<slug>/env.json - NO los subas a un repo publico.",
       "READ-ONLY: el script no modifica Dokploy ni los servicios.",
+      "Servicios con sourceType=git se restauran haciendo deploy desde el repo en Contabo (no se clona el codigo, solo se restaura env, compose y volumenes).",
     ],
   };
 }

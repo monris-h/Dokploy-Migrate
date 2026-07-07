@@ -26,6 +26,16 @@ export type ManifestService = {
   kind: ServiceKind;
   databaseType: DatabaseType | null;
   image: string | null;
+  /** Tipo de fuente original: "image" / "git" / "docker-compose" */
+  sourceType?: "image" | "git" | "docker-compose" | null;
+  /** Repo URL si viene de git */
+  repository?: string | null;
+  /** Branch a deployar */
+  branch?: string | null;
+  /** Commit SHA actual del repo */
+  commit?: string | null;
+  /** Path dentro del repo (monorepos) */
+  buildPath?: string | null;
   selection: BackupSelection;
 };
 

@@ -27,6 +27,16 @@ export type ServiceSummary = {
   envId?: string;
   /** Dokploy projectId al que pertenece este service. */
   projectId?: string;
+  /** Tipo de fuente: "image" (registry/docker) o "git" (repo). */
+  sourceType?: "image" | "git" | "docker-compose";
+  /** Repo URL si viene de git. */
+  repository?: string;
+  /** Branch a deployar. */
+  branch?: string;
+  /** Commit SHA actual del repo. */
+  commit?: string;
+  /** Path dentro del repo (para monorepos). */
+  buildPath?: string;
 };
 
 export type DatabaseType = "postgres" | "mysql" | "mariadb" | "mongo" | "redis";
