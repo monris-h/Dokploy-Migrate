@@ -1,0 +1,21 @@
+node_modules/
+backups/
+*.log
+*.tar.gz
+*.zip
+.env
+.env.local
+dist/
+.tsbuildinfo
+
+# Local DB lives in %USERPROFILE%\.migrate-dokploy\ — but ignore any local copy
+db.json
+.migrate-dokploy/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+.DS_Store
