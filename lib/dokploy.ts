@@ -134,7 +134,8 @@ export async function listServices(
 
   for (const env of environments) {
     log(`  [A] env ${env.environmentId} - extrayendo desde project.one.environments[]:`);
-    const { services, unknownKeys } = extractServicesFromEnv(
+    const { services, unknownKeys } = await extractServicesFromEnv(
+      conn,
       env.raw,
       env.environmentId,
       projectId,
@@ -263,7 +264,8 @@ export async function listServicesByEnvironment(
     projectId ?? (String(data.projectId ?? data.project ?? "") || undefined);
 
   const seen = new Set<string>();
-  const { services, unknownKeys } = extractServicesFromEnv(
+  const { services, unknownKeys } = await extractServicesFromEnv(
+    conn,
     data,
     envId,
     pid,
@@ -285,13 +287,14 @@ export async function listServicesByEnvironment(
  * Busca las colecciones estandar: applications, postgres, mysql, mariadb,
  * mongo, redis, compose.
  */
-function extractServicesFromEnv(
+async function extractServicesFromEnv(
+  conn: Connection,
   envRaw: Record<string, unknown>,
   envId: string,
   projectId: string | undefined,
   seen: Set<string>,
   log: (m: string) => void
-): { services: ServiceSummary[]; unknownKeys: string[] } {
+): Promise<{ services: ServiceSummary[]; unknownKeys: string[] }> {
   const services: ServiceSummary[] = [];
   const unknownKeys: string[] = [];
 
@@ -305,48 +308,98 @@ function extractServicesFromEnv(
       const k = `${entry.kind}:${id}`;
       if (seen.has(k)) continue;
       seen.add(k);
+
+      // Hacer una llamada .one para obtener info extendida (Mounts, repo, branch, etc)
+      const detail = await fetchServiceDetail(conn, entry, id, log);
+
+      const baseName = String(it["name"] ?? it["appName"] ?? it["Name"] ?? "?");
+
       services.push({
         kind: entry.kind,
         id,
-        name: String(it["name"] ?? it["appName"] ?? it["Name"] ?? "?"),
-        appName: String(it["appName"] ?? it["AppName"] ?? "") || undefined,
+        name: baseName,
+        appName:
+          String(detail?.appName ?? it["appName"] ?? it["AppName"] ?? "") ||
+          undefined,
         envId,
         projectId,
         databaseType: entry.databaseType,
-        image: (it["dockerImage"] as string | undefined) ?? undefined,
-        // -------- Source --------
-        sourceType: (it["sourceType"] as ServiceSummary["sourceType"]) ?? undefined,
-        sourceProvider: (it["sourceType"] as string | undefined) ?? undefined,
+        image:
+          (detail?.dockerImage as string | undefined) ??
+          (it["dockerImage"] as string | undefined) ??
+          undefined,
+        // Source
+        sourceType:
+          (detail?.sourceType as ServiceSummary["sourceType"]) ??
+          (it["sourceType"] as ServiceSummary["sourceType"]) ??
+          undefined,
+        sourceProvider:
+          (detail?.sourceType as string | undefined) ??
+          (it["sourceType"] as string | undefined) ??
+          undefined,
         sourceAccountId:
+          (detail?.githubAccountId as string | undefined) ??
+          (detail?.gitlabAccountId as string | undefined) ??
+          (detail?.bitbucketAccountId as string | undefined) ??
+          (detail?.giteaAccountId as string | undefined) ??
           (it["githubAccountId"] as string | undefined) ??
           (it["gitlabAccountId"] as string | undefined) ??
-          (it["bitbucketAccountId"] as string | undefined) ??
-          (it["giteaAccountId"] as string | undefined) ??
           undefined,
         repository:
+          (detail?.repository as string | undefined) ??
+          (detail?.customGitUrl as string | undefined) ??
           (it["repository"] as string | undefined) ??
           (it["customGitUrl"] as string | undefined) ??
           undefined,
         branch:
+          (detail?.branch as string | undefined) ??
+          (detail?.customGitBranch as string | undefined) ??
           (it["branch"] as string | undefined) ??
           (it["customGitBranch"] as string | undefined) ??
           undefined,
-        commit: (it["commit"] as string | undefined) ?? undefined,
-        buildPath: (it["buildPath"] as string | undefined) ?? undefined,
-        triggerType: (it["triggerType"] as string | undefined) ?? undefined,
-        watchPaths: Array.isArray(it["watchPaths"])
-          ? (it["watchPaths"] as string[])
-          : undefined,
-        enableSubmodules: typeof it["enableSubmodules"] === "boolean"
-          ? (it["enableSubmodules"] as boolean)
-          : undefined,
-        // -------- Build --------
-        buildType: (it["buildType"] as string | undefined) ?? undefined,
-        dockerfile: (it["dockerfile"] as string | undefined) ?? undefined,
-        dockerContextPath: (it["dockerContextPath"] as string | undefined) ?? undefined,
-        dockerBuildStage: (it["dockerBuildStage"] as string | undefined) ?? undefined,
-        // -------- Volumenes declarados (de la API) --------
-        mounts: extractMounts(it),
+        commit:
+          (detail?.commit as string | undefined) ??
+          (it["commit"] as string | undefined) ??
+          undefined,
+        buildPath:
+          (detail?.buildPath as string | undefined) ??
+          (it["buildPath"] as string | undefined) ??
+          undefined,
+        triggerType:
+          (detail?.triggerType as string | undefined) ??
+          (it["triggerType"] as string | undefined) ??
+          undefined,
+        watchPaths: Array.isArray(detail?.watchPaths)
+          ? (detail!.watchPaths as string[])
+          : Array.isArray(it["watchPaths"])
+            ? (it["watchPaths"] as string[])
+            : undefined,
+        enableSubmodules:
+          typeof detail?.enableSubmodules === "boolean"
+            ? (detail!.enableSubmodules as boolean)
+            : typeof it["enableSubmodules"] === "boolean"
+              ? (it["enableSubmodules"] as boolean)
+              : undefined,
+        // Build
+        buildType:
+          (detail?.buildType as string | undefined) ??
+          (it["buildType"] as string | undefined) ??
+          undefined,
+        dockerfile:
+          (detail?.dockerfile as string | undefined) ??
+          (it["dockerfile"] as string | undefined) ??
+          undefined,
+        dockerContextPath:
+          (detail?.dockerContextPath as string | undefined) ??
+          (it["dockerContextPath"] as string | undefined) ??
+          undefined,
+        dockerBuildStage:
+          (detail?.dockerBuildStage as string | undefined) ??
+          (it["dockerBuildStage"] as string | undefined) ??
+          undefined,
+        // Volumenes declarados (de la API)
+        mounts:
+          (detail && extractMounts(detail)) || extractMounts(it),
       });
     }
   }
@@ -360,6 +413,39 @@ function extractServicesFromEnv(
   }
 
   return { services, unknownKeys };
+}
+
+/**
+ * Hace una llamada al endpoint .one del tipo de servicio para obtener
+ * la info extendida (Mounts, sourceType, repository, branch, etc.).
+ * Si falla, devuelve {} (los campos basicos del item raw siguen disponibles).
+ */
+async function fetchServiceDetail(
+  conn: Connection,
+  entry: { kind: ServiceKind; key: string; idField: string; databaseType?: DatabaseType },
+  id: string,
+  log: (m: string) => void
+): Promise<Record<string, unknown> | undefined> {
+  // Mapear kind -> path del endpoint
+  let path = "";
+  if (entry.kind === "app") path = `/api/application.one?applicationId=${encodeURIComponent(id)}`;
+  else if (entry.kind === "db") {
+    const type = entry.databaseType ?? "postgres";
+    path = `/api/${type}.one?${type}Id=${encodeURIComponent(id)}`;
+  } else if (entry.kind === "compose") {
+    path = `/api/compose.one?composeId=${encodeURIComponent(id)}`;
+  } else {
+    return undefined;
+  }
+
+  try {
+    const data = await dokployFetch<Record<string, unknown>>(conn, path);
+    log(`      .one(${entry.kind}) id=${id.slice(0, 12)}... -> OK (${Object.keys(data).length} keys)`);
+    return data;
+  } catch (e) {
+    log(`      .one(${entry.kind}) id=${id.slice(0, 12)}... -> FAIL: ${(e as Error).message}`);
+    return undefined;
+  }
 }
 
 /**
