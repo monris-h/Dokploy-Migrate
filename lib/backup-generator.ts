@@ -11,6 +11,7 @@ import type { BackupPlan, DatabaseType } from "./types.js";
 export function generateBackupScript(plan: BackupPlan): string {
   const { project, services, bundleName, generatedAt } = plan;
   const outDir = `./${bundleName}`;
+  const projectSlug = slugify(project.name);
 
   const lines: string[] = [];
 
@@ -18,6 +19,7 @@ export function generateBackupScript(plan: BackupPlan): string {
   lines.push("# ============================================================");
   lines.push(`# Backup generado por migrate-dokploy`);
   lines.push(`# Proyecto: ${project.name} (${project.projectId})`);
+  lines.push(`# Slug: ${projectSlug}`);
   lines.push(`# Generado: ${generatedAt}`);
   lines.push("# Ejecutar DENTRO del VPS Hostinger como root (o con sudo).");
   lines.push("# READ-ONLY: no se modifica Dokploy, servicios ni datos.");
@@ -25,24 +27,63 @@ export function generateBackupScript(plan: BackupPlan): string {
   lines.push("set -euo pipefail");
   lines.push("");
   lines.push(`PROJECT_ID="${project.projectId}"`);
+  lines.push(`PROJECT_SLUG="${projectSlug}"`);
   lines.push(`BUNDLE="${bundleName}"`);
   lines.push(`OUT="${outDir}"`);
   lines.push("");
 
+  // DEBUG: listar containers para entender la nomina que usa Dokploy en este VPS
+  lines.push(`echo "==> Containers presentes en este VPS (para debug de nombres):"`);
+  lines.push(`docker ps -a --format '  {{.Names}}  | project={{.Label "com.docker.compose.project"}}  | service={{.Label "com.docker.compose.service"}}' 2>/dev/null || docker ps -a --format '  {{.Names}}'`);
+  lines.push("");
+
+  // resolve_container con multiples fallbacks
   lines.push(`resolve_container() {
-  local service="$1"
+  local service="$1"          # nombre legible del servicio (ej: "web")
+  local appname="\${2:-}"      # appName/slug exacto (ej: "web" o "onefit-postgres"); opcional
+
+  # Si nos pasan appname explicito, probarlo primero
+  if [ -n "\${appname}" ]; then
+    local candidates=(
+      "\${appname}"
+      "\${appname}-1"
+      "\${PROJECT_SLUG}-\${appname}-1"
+      "\${PROJECT_SLUG}-\${appname}"
+      "\${PROJECT_SLUG}_\${appname}_1"
+      "\${PROJECT_ID}-\${appname}-1"
+      "\${PROJECT_ID}-\${appname}"
+      "\${PROJECT_ID}_\${appname}_1"
+    )
+    for c in "\${candidates[@]}"; do
+      if docker ps -a --format '{{.Names}}' | grep -qx "$c"; then
+        echo "$c"; return 0
+      fi
+    done
+  fi
+
+  # Fallback: probar con el nombre legible
   local candidates=(
+    "\${service}"
+    "\${service}-1"
+    "\${PROJECT_SLUG}-\${service}-1"
+    "\${PROJECT_SLUG}-\${service}"
     "\${PROJECT_ID}-\${service}-1"
     "\${PROJECT_ID}-\${service}"
     "\${PROJECT_ID}_\${service}_1"
   )
   for c in "\${candidates[@]}"; do
     if docker ps -a --format '{{.Names}}' | grep -qx "$c"; then
-      echo "$c"
-      return 0
+      echo "$c"; return 0
     fi
   done
-  docker ps -a --format '{{.Names}}' | grep -E "^\${PROJECT_ID}.*\${service}" | head -n1 || true
+
+  # Fallback final: buscar por label (Dokploy pone label com.docker.compose.service)
+  local by_label
+  by_label=$(docker ps -a --filter "label=com.docker.compose.service=\${appname:-\${service}}" --format '{{.Names}}' | head -n1 || true)
+  if [ -n "\${by_label}" ]; then echo "\${by_label}"; return 0; fi
+
+  # Fallback grep flexible (case-insensitive) - ultimo recurso
+  docker ps -a --format '{{.Names}}' | grep -i "\${service}" | head -n1 || true
 }
 `);
   lines.push("");
@@ -61,26 +102,33 @@ echo ""`);
     const sel = s.selection;
     if (!sel.compose && !sel.env && !sel.volumes && !sel.database) continue;
     const svcSlug = slugify(s.service.name);
+    const appName = s.service.appName ?? svcSlug;
     const dir = `\${OUT}/services/${svcSlug}`;
     lines.push("# ----------------------------------------------------------");
-    lines.push(`# Servicio: ${s.service.name} (${s.service.kind}${s.service.databaseType ? "/" + s.service.databaseType : ""})`);
+    lines.push(`# Servicio: ${s.service.name} (${s.service.kind}${s.service.databaseType ? "/" + s.service.databaseType : ""}) - appName=${appName}`);
     lines.push("# ----------------------------------------------------------");
     lines.push(`mkdir -p "${dir}"`);
-    lines.push(`CONTAINER="$(resolve_container '${s.service.name}' || true)"`);
+    lines.push(`CONTAINER="$(resolve_container '${s.service.name}' '${appName}' || true)"`);
     lines.push(`if [ -z "\${CONTAINER:-}" ]; then`);
-    lines.push(`  echo "  [WARN] No encontre contenedor para '${s.service.name}'. Saltando."`);
-    lines.push(`  echo "        Lo busque como: \${PROJECT_ID}-${s.service.name}-1 / \${PROJECT_ID}-${s.service.name}"`);
+    lines.push(`  echo "  [WARN] No encontre contenedor para '${s.service.name}' (appName='${appName}'). Saltando."`);
+    lines.push(`  echo "        Probe los nombres listados arriba con prefijo '\${PROJECT_SLUG}' y '\${PROJECT_ID}'."`);
     lines.push(`else`);
     lines.push(`  echo "  -> Container: \${CONTAINER}"`);
 
     if (sel.compose) {
       lines.push(`  # Definicion del servicio desde el path interno de Dokploy`);
       lines.push(`  mkdir -p "${dir}/dokploy"`);
-      lines.push(`  if [ -d "/etc/dokploy/compose/\${PROJECT_ID}" ]; then`);
-      lines.push(`    cp -r /etc/dokploy/compose/\${PROJECT_ID}/* "${dir}/dokploy/" 2>/dev/null || true`);
-      lines.push(`  fi`);
+      lines.push(`  for base in "/etc/dokploy/compose/\${PROJECT_SLUG}" "/etc/dokploy/compose/\${PROJECT_ID}" "/etc/dokploy/compose/\${appname}"; do`);
+      lines.push(`    if [ -d "$base" ]; then`);
+      lines.push(`      cp -r "$base"/* "${dir}/dokploy/" 2>/dev/null || true`);
+      lines.push(`      break`);
+      lines.push(`    fi`);
+      lines.push(`  done`);
       lines.push(`  docker inspect "\${CONTAINER}" > "${dir}/docker-inspect.json" 2>/dev/null || true`);
       lines.push(`  for cf in \\`);
+      lines.push(`    "/etc/dokploy/compose/\${PROJECT_SLUG}/docker-compose.yml" \\`);
+      lines.push(`    "/etc/dokploy/compose/\${PROJECT_SLUG}/compose.yaml" \\`);
+      lines.push(`    "/etc/dokploy/compose/\${PROJECT_SLUG}/docker-compose.yaml" \\`);
       lines.push(`    "/etc/dokploy/compose/\${PROJECT_ID}/docker-compose.yml" \\`);
       lines.push(`    "/etc/dokploy/compose/\${PROJECT_ID}/compose.yaml" \\`);
       lines.push(`    "/etc/dokploy/compose/\${PROJECT_ID}/docker-compose.yaml"; do`);
@@ -92,6 +140,9 @@ echo ""`);
       lines.push(`  # Variables de entorno del container`);
       lines.push(`  docker inspect "\${CONTAINER}" --format='{{json .Config.Env}}' > "${dir}/env.json" 2>/dev/null || true`);
       lines.push(`  for ef in \\`);
+      lines.push(`    "/etc/dokploy/compose/\${PROJECT_SLUG}/${s.service.name}.env" \\`);
+      lines.push(`    "/etc/dokploy/compose/\${PROJECT_SLUG}/${appName}.env" \\`);
+      lines.push(`    "/etc/dokploy/compose/\${PROJECT_SLUG}/.env" \\`);
       lines.push(`    "/etc/dokploy/compose/\${PROJECT_ID}/${s.service.name}.env" \\`);
       lines.push(`    "/etc/dokploy/compose/\${PROJECT_ID}/.env"; do`);
       lines.push(`    if [ -f "$ef" ]; then cp "$ef" "${dir}/service.env"; break; fi`);

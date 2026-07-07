@@ -304,6 +304,7 @@ function extractServicesFromEnv(
         kind: entry.kind,
         id,
         name: String(it["name"] ?? it["appName"] ?? it["Name"] ?? "?"),
+        appName: String(it["appName"] ?? it["AppName"] ?? "") || undefined,
         envId,
         projectId,
         databaseType: entry.databaseType,

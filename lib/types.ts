@@ -16,6 +16,8 @@ export type ServiceKind = "app" | "db" | "compose" | "unknown";
 export type ServiceSummary = {
   id: string;
   name: string;
+  /** Slug interno del service (appName) tal como Dokploy lo nombra en docker. */
+  appName?: string;
   kind: ServiceKind;
   status?: string;
   volumeName?: string;
