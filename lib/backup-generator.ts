@@ -36,7 +36,7 @@ export function generateBackupScript(plan: BackupPlan): string {
   lines.push(`PROJECT_ID="${project.projectId}"`);
   lines.push(`PROJECT_SLUG="${projectSlug}"`);
   lines.push(`BUNDLE="${bundleName}"`);
-  lines.push(`OUT="${bundleName}"`);  // path relativo al WORK_DIR (sin /tmp/)
+  lines.push(`OUT="\${WORK_DIR}/${bundleName}"`);  // path ABSOLUTO para que docker run -v no se confunda
   lines.push("");
 
 // DEBUG: listar containers para entender la nomina que usa Dokploy en este VPS
