@@ -445,18 +445,29 @@ async function fetchServiceDetail(
       (raw["data"] as Record<string, unknown> | undefined) ??
       (raw["result"] as Record<string, unknown> | undefined)?.["data"] as Record<string, unknown> | undefined ??
       raw;
-    log(`      .one(${entry.kind}) id=${id.slice(0, 12)}... -> OK (keys: ${Object.keys(data).slice(0, 15).join(", ")})`);
-    // Imprimir SIEMPRE si encontro mounts para que el usuario lo vea
+    // SIEMPRE visible (no requiere DEBUG): mostrar que se llamo al .one y que volvio
+    process.stdout.write(
+      `      [fetch] .one(${entry.kind}) ${id.slice(0, 12)}... OK keys=[${Object.keys(data).slice(0, 12).join(", ")}]\n`
+    );
     const mountKeys = ["Mounts", "mounts", "Volumes", "volumes", "mountsList"];
+    let foundMounts: string | null = null;
     for (const mk of mountKeys) {
       const v = data[mk];
       if (Array.isArray(v) && v.length > 0) {
-        log(`      -> ${mk}: ${v.length} items (ej: ${JSON.stringify(v[0]).slice(0, 150)})`);
+        foundMounts = `${mk}: ${v.length} items (ej: ${JSON.stringify(v[0]).slice(0, 120)})`;
+        break;
       }
+    }
+    if (foundMounts) {
+      process.stdout.write(`      [fetch] mounts encontrados -> ${foundMounts}\n`);
+    } else {
+      process.stdout.write(`      [fetch] sin mounts en .one response\n`);
     }
     return data;
   } catch (e) {
-    log(`      .one(${entry.kind}) id=${id.slice(0, 12)}... -> FAIL: ${(e as Error).message}`);
+    process.stdout.write(
+      `      [fetch] .one(${entry.kind}) ${id.slice(0, 12)}... FAIL: ${(e as Error).message}\n`
+    );
     return undefined;
   }
 }
