@@ -70,7 +70,18 @@ export async function extractBundle(tarPath: string): Promise<ExtractedBundle> {
   });
 
   const top = await fs.readdir(extractRoot);
-  const bundleDirs = top.filter((d) => !d.startsWith("."));
+  let bundleDirs = top.filter((d) => !d.startsWith("."));
+
+  // Retrocompatibilidad: si el primer nivel es un dir de sistema (tmp/, root/,
+  // home/) que se metio porque el script bash uso paths absolutos, bajar un nivel.
+  const SYSTEM_DIRS = new Set(["tmp", "root", "home", "var"]);
+  let extraPrefix = "";
+  if (bundleDirs.length === 1 && SYSTEM_DIRS.has(bundleDirs[0])) {
+    extraPrefix = bundleDirs[0];
+    const inner = await fs.readdir(path.join(extractRoot, extraPrefix));
+    bundleDirs = inner.filter((d) => !d.startsWith("."));
+  }
+
   if (bundleDirs.length === 0) throw new Error("Bundle vacio");
   if (bundleDirs.length > 1) {
     throw new Error(
@@ -78,7 +89,7 @@ export async function extractBundle(tarPath: string): Promise<ExtractedBundle> {
     );
   }
   const bundleDir = bundleDirs[0];
-  const full = path.join(extractRoot, bundleDir);
+  const full = path.join(extractRoot, extraPrefix, bundleDir);
 
   const manifestPath = path.join(full, "manifest.json");
   const manifestRaw = JSON.parse(await fs.readFile(manifestPath, "utf8")) as Manifest;
