@@ -117,76 +117,114 @@ export async function listServices(
 
   log(`projectId: ${projectId}`);
 
-  // Paso 1: detectar environmentId via /api/project.one
-  const { project, environmentIds } = await detectProjectAndEnvs(conn, projectId);
-  log(`project encontrado: "${project.name}". environments: ${environmentIds.join(", ")}`);
+  // Paso 1: detectar project + environments via /api/project.one
+  const { project, environments, raw } = await detectProjectAndEnvs(conn, projectId);
+  const envIds = environments.map((e) => e.environmentId);
+  log(`project "${project.name}" environments: [${envIds.join(", ")}]`);
 
-  // Helper: filtra items por projectId o por environmentId (cualquier variante)
-  const matches = (it: Record<string, unknown>): boolean => {
-    const projectFields = ["projectId", "projectID", "ProjectId"];
-    if (projectFields.some((f) => it[f] === projectId)) return true;
-    const envFields = ["environmentId", "environmentID", "EnvironmentId"];
-    if (environmentIds.some((e) => envFields.some((f) => it[f] === e))) return true;
-    return false;
-  };
-
-  // Paso 2: estrategia de "listar todo + filtrar local" como fallback principal
-  // (porque la API puede ignorar ?projectId= y ?environmentId= en esta version)
+  // Paso 2 (PRINCIPAL): extraer servicios directamente de environments[].
+  // En Dokploy moderno, /api/project.one devuelve cada environment con sus
+  // services colgando: environments[i].applications, .postgres, .mysql,
+  // .mariadb, .mongo, .redis, .compose. Esto es lo correcto.
   const out: ServiceSummary[] = [];
-  const seen = new Set<string>(); // dedupe por id
+  const seen = new Set<string>();
+  const seenEnvKeys = new Set<string>(); // para reportar campos que NO se reconocieron
 
-  for (const [type, fetcher] of [
-    ["application", () => fetchAllApps(conn, "", false)] as const,
-    ["postgres", () => fetchAllDbs(conn, "postgres", "", false)] as const,
-    ["mysql", () => fetchAllDbs(conn, "mysql", "", false)] as const,
-    ["mariadb", () => fetchAllDbs(conn, "mariadb", "", false)] as const,
-    ["mongo", () => fetchAllDbs(conn, "mongo", "", false)] as const,
-    ["redis", () => fetchAllDbs(conn, "redis", "", false)] as const,
-    ["compose", () => fetchCompose(conn, "", false)] as const,
-  ]) {
-    let allItems: ServiceSummary[] = [];
-    try {
-      allItems = await fetcher();
-    } catch (e) {
-      log(`${type}.all FAIL: ${(e as Error).message}`);
-      continue;
+  for (const env of environments) {
+    log(`  env ${env.environmentId} - extrayendo services:`);
+    for (const entry of COLLECTION_KEYS) {
+      const items = (env.raw[entry.key] as Array<Record<string, unknown>>) ?? [];
+      if (items.length === 0) continue;
+      log(`    ${entry.key}: ${items.length} items`);
+      for (const it of items) {
+        const id = String(
+          it[entry.idField] ?? it["id"] ?? it["Id"] ?? ""
+        );
+        if (!id) continue;
+        const k = `${entry.kind}:${id}`;
+        if (seen.has(k)) continue;
+        seen.add(k);
+        out.push({
+          kind: entry.kind,
+          id,
+          name: String(it["name"] ?? it["appName"] ?? it["Name"] ?? "?"),
+          envId: env.environmentId,
+          projectId,
+          databaseType: entry.databaseType,
+        });
+      }
     }
-    log(`${type}.all (total server): ${allItems.length} items`);
+    // Detectar campos desconocidos (que parezcan colecciones)
+    for (const k of Object.keys(env.raw)) {
+      if (COLLECTION_KEYS.some((c) => c.key === k)) continue;
+      const v = (env.raw as Record<string, unknown>)[k];
+      if (Array.isArray(v) && v.length > 0 && typeof v[0] === "object") {
+        seenEnvKeys.add(k);
+      }
+    }
+  }
 
-    const mine = allItems.filter((s) => matches(s as unknown as Record<string, unknown>));
-    log(`${type}.all -> mios: ${mine.length}`);
+  if (seenEnvKeys.size > 0) {
+    const keys = Array.from(seenEnvKeys);
+    log(`  campos no reconocidos en env (parecian colecciones): ${keys.join(", ")}`);
+  }
 
-    for (const svc of mine) {
-      const k = `${svc.kind}:${svc.id}`;
-      if (seen.has(k)) continue;
-      seen.add(k);
-      out.push(svc);
+  // Paso 3 (FALLBACK): si 0 desde environments[], probar endpoints .all
+  if (out.length === 0) {
+    log(`0 desde project.one; fallback a endpoints .all`);
+    const matches = (it: Record<string, unknown>): boolean => {
+      const projectFields = ["projectId", "projectID", "ProjectId"];
+      if (projectFields.some((f) => it[f] === projectId)) return true;
+      const envFields = ["environmentId", "environmentID", "EnvironmentId"];
+      if (envIds.some((e) => envFields.some((f) => it[f] === e))) return true;
+      return false;
+    };
+
+    for (const [type, fetcher] of [
+      ["application", () => fetchAllApps(conn, "", false)] as const,
+      ["postgres", () => fetchAllDbs(conn, "postgres", "", false)] as const,
+      ["mysql", () => fetchAllDbs(conn, "mysql", "", false)] as const,
+      ["mariadb", () => fetchAllDbs(conn, "mariadb", "", false)] as const,
+      ["mongo", () => fetchAllDbs(conn, "mongo", "", false)] as const,
+      ["redis", () => fetchAllDbs(conn, "redis", "", false)] as const,
+      ["compose", () => fetchCompose(conn, "", false)] as const,
+    ]) {
+      try {
+        const items = await fetcher();
+        log(`${type}.all: ${items.length} total`);
+        for (const s of items.filter((x) =>
+          matches(x as unknown as Record<string, unknown>)
+        )) {
+          const k = `${s.kind}:${s.id}`;
+          if (seen.has(k)) continue;
+          seen.add(k);
+          out.push(s);
+        }
+      } catch (e) {
+        log(`${type}.all FAIL: ${(e as Error).message}`);
+      }
     }
   }
 
   log(`total: ${out.length} servicios`);
 
   if (out.length === 0) {
-    // Ninguna estrategia funciono. Damos info util de debug.
-    let info = "";
-    try {
-      const allApps = await fetchAllApps(conn, "", false);
-      info = `Aplicaciones del server (sin filtro): ${allApps.length}. `;
-      if (allApps.length > 0) {
-        const sample = allApps.slice(0, 3).map((a) => {
-          const x = a as unknown as Record<string, unknown>;
-          return `name=${a.name} projectId=${x.projectId ?? "?"} environmentId=${x.environmentId ?? "?"}`;
-        });
-        info += `Ejemplos: ${sample.join(" | ")}`;
-      }
-    } catch (e) {
-      info = `Error: ${(e as Error).message}`;
+    // Dump clave-valor del primer environment para entender la estructura
+    let envShape = "(none)";
+    if (environments.length > 0) {
+      const env0 = environments[0];
+      envShape = Object.keys(env0.raw)
+        .filter((k) => {
+          const v = (env0.raw as Record<string, unknown>)[k];
+          return Array.isArray(v) || typeof v === "object";
+        })
+        .join(", ");
     }
     throw new Error(
-      `No se encontraron servicios para el proyecto "${projectId}". ` +
-        `project.one devolvio environments: [${environmentIds.join(", ")}]. ` +
-        `${info}. ` +
-        `Tip: tu Dokploy puede usar un campo distinto. Corre: node debug-services.mjs ${projectId}`
+      `No se encontraron servicios para el proyecto "${project.name}" (${projectId}). ` +
+        `environments devueltos: [${envIds.join(", ")}]. ` +
+        `Claves del primer environment: ${envShape}. ` +
+        `Tip: corre "node debug-services.mjs ${projectId}" y mandame el output completo.`
     );
   }
 
@@ -194,34 +232,52 @@ export async function listServices(
 }
 
 /**
- * Detecta el projectId y todos los environmentIds asociados via /api/project.one.
+ * Llaves estandar que Dokploy usa dentro de cada environment para sus services.
+ * Si tu version tiene otras, agregalas aca.
+ *
+ * `kind` es el ServiceKind generico (app/db/compose) que usa el resto del
+ * codigo. `databaseType` se setea solo para kinds db.
  */
+const COLLECTION_KEYS: Array<{
+  kind: ServiceKind;
+  key: string;
+  idField: string;
+  databaseType?: DatabaseType;
+}> = [
+  { kind: "app", key: "applications", idField: "applicationId" },
+  { kind: "db", key: "postgres", idField: "postgresId", databaseType: "postgres" },
+  { kind: "db", key: "mysql", idField: "mysqlId", databaseType: "mysql" },
+  { kind: "db", key: "mariadb", idField: "mariadbId", databaseType: "mariadb" },
+  { kind: "db", key: "mongo", idField: "mongoId", databaseType: "mongo" },
+  { kind: "db", key: "redis", idField: "redisId", databaseType: "redis" },
+  { kind: "compose", key: "compose", idField: "composeId" },
+];
+
 async function detectProjectAndEnvs(
   conn: Connection,
   projectId: string
-): Promise<{ project: { name: string; projectId: string }; environmentIds: string[] }> {
-  try {
-    const data = await dokployFetch<Record<string, unknown>>(
-      conn,
-      `/api/project.one?projectId=${encodeURIComponent(projectId)}`
-    );
-    const envs = (data.environments as Array<Record<string, unknown>>) ?? [];
-    const envIds = envs
-      .map((e) => String(e.environmentId ?? e.id ?? ""))
-      .filter(Boolean);
-    return {
-      project: {
-        name: String(data.name ?? "?"),
-        projectId: String(data.projectId ?? projectId),
-      },
-      environmentIds: envIds,
-    };
-  } catch (e) {
-    return {
-      project: { name: "?", projectId },
-      environmentIds: [],
-    };
-  }
+): Promise<{
+  project: { name: string; projectId: string };
+  environments: Array<{ environmentId: string; name?: string; raw: Record<string, unknown> }>;
+  raw: Record<string, unknown>;
+}> {
+  const data = await dokployFetch<Record<string, unknown>>(
+    conn,
+    `/api/project.one?projectId=${encodeURIComponent(projectId)}`
+  );
+  const envs = (data.environments as Array<Record<string, unknown>>) ?? [];
+  return {
+    project: {
+      name: String(data.name ?? "?"),
+      projectId: String(data.projectId ?? projectId),
+    },
+    environments: envs.map((e) => ({
+      environmentId: String(e.environmentId ?? e.id ?? ""),
+      name: e.name as string | undefined,
+      raw: e,
+    })),
+    raw: data,
+  };
 }
 
 async function fetchAllApps(

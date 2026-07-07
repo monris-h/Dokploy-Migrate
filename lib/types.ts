@@ -21,6 +21,10 @@ export type ServiceSummary = {
   volumeName?: string;
   databaseType?: DatabaseType;
   image?: string;
+  /** Dokploy environmentId al que pertenece este service. */
+  envId?: string;
+  /** Dokploy projectId al que pertenece este service. */
+  projectId?: string;
 };
 
 export type DatabaseType = "postgres" | "mysql" | "mariadb" | "mongo" | "redis";

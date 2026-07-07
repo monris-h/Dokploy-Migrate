@@ -82,10 +82,37 @@ async function main() {
 
   await probe("1) Lista TODOS los proyectos", "/api/project.all");
   await probe("2) Detalle del projectId", `/api/project.one?projectId=${encodeURIComponent(projectId)}`);
+
+  // Dump estructura completa del project.one para entender la forma
+  console.log(`[2b] Estructura COMPLETA del project.one (solo envs y services):`);
+  try {
+    const r = await fetch(`${url.replace(/\/+$/, "")}/api/project.one?projectId=${encodeURIComponent(projectId)}`, { headers });
+    const data = await r.json();
+    const envs = data.environments || [];
+    console.log(`  ${envs.length} environments. Claves top-level del proyecto: ${Object.keys(data).join(", ")}`);
+    for (const env of envs) {
+      const keys = Object.keys(env).filter((k) => {
+        const v = env[k];
+        return Array.isArray(v) || typeof v === "object";
+      });
+      console.log(`  env ${env.environmentId} name=${env.name} - claves con datos: ${keys.join(", ")}`);
+      for (const k of keys) {
+        const v = env[k];
+        if (Array.isArray(v)) {
+          console.log(`    ${k}: array[${v.length}] - ejemplos: ${v.slice(0, 2).map((x) => `${x.name || x.appName || "?"}(${Object.keys(x).slice(0,5).join(",")})`).join(" | ")}`);
+        }
+      }
+    }
+  } catch (e) {
+    console.log(`  Error: ${e.message}`);
+  }
+  console.log("");
+
   await probe("3) application.all SIN filtro", "/api/application.all");
-  await probe("4) application.all CON filtro", `/api/application.all?projectId=${encodeURIComponent(projectId)}`);
-  await probe("5) postgres.all CON filtro", `/api/postgres.all?projectId=${encodeURIComponent(projectId)}`);
-  await probe("6) compose.all CON filtro", `/api/compose.all?projectId=${encodeURIComponent(projectId)}`);
+  await probe("4) application.all CON projectId", `/api/application.all?projectId=${encodeURIComponent(projectId)}`);
+  await probe("5) application.all CON environmentId", `/api/application.all?environmentId=NCne7bMSIzrDySX71zGsT`);
+  await probe("6) postgres.all CON projectId", `/api/postgres.all?projectId=${encodeURIComponent(projectId)}`);
+  await probe("7) compose.all CON projectId", `/api/compose.all?projectId=${encodeURIComponent(projectId)}`);
 }
 
 main().catch((e) => {
