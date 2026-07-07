@@ -1120,13 +1120,16 @@ function extractMounts(
 
   const out: NonNullable<ServiceSummary["mounts"]> = [];
   for (const m of raw) {
+    // El item real de Dokploy usa camelCase: volumeName, filePath, mountId
     const name = String(
-      m["Name"] ?? m["name"] ?? m["Source"] ?? m["source"] ?? m["VolumeName"] ?? ""
+      m["volumeName"] ?? m["VolumeName"] ?? m["Name"] ?? m["name"] ??
+      m["Source"] ?? m["source"] ?? ""
     );
     const destination = String(
-      m["Destination"] ?? m["destination"] ?? m["Target"] ?? m["target"] ?? m["MountPath"] ?? ""
+      m["Destination"] ?? m["destination"] ?? m["Target"] ?? m["target"] ??
+      m["MountPath"] ?? m["mountPath"] ?? m["containerPath"] ?? m["filePath"] ?? ""
     );
-    const type = String(m["Type"] ?? m["type"] ?? "volume");
+    const type = String(m["type"] ?? m["Type"] ?? "volume");
     if (name || destination) {
       out.push({
         name,
