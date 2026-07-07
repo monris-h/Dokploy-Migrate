@@ -51,6 +51,26 @@ export type RestoreResult = {
 export async function runRestore(opts: RestoreOptions): Promise<RestoreResult> {
   const { conn, ssh, bundle, tarGzPath } = opts;
   const { manifest } = bundle;
+
+  // Validaciones tempranas para fallar con mensajes utiles en vez de errores raros
+  if (!manifest?.services || !Array.isArray(manifest.services)) {
+    throw new Error(`Manifest invalido: 'services' no es un array.`);
+  }
+  if (!manifest?.project?.name) {
+    throw new Error(`Manifest invalido: falta 'project.name'.`);
+  }
+  for (const [i, svc] of manifest.services.entries()) {
+    if (!svc || typeof svc !== "object") {
+      throw new Error(`Manifest invalido: services[${i}] no es un objeto.`);
+    }
+    if (!svc.name || typeof svc.name !== "string") {
+      throw new Error(`Manifest invalido: services[${i}].name falta o no es string.`);
+    }
+    if (!svc.kind) {
+      throw new Error(`Manifest invalido: services[${i}].kind falta.`);
+    }
+  }
+
   const projectName = sanitizeProjectName(manifest.project.name);
   const wait = (opts.waitForRunningSec ?? 30) * 1000;
 
@@ -288,7 +308,7 @@ async function createAndProvisionService(ctx: Ctx) {
       index: step,
       plan: tarList.map((v) => `  - ${path.basename(v)}`),
       optional: true,
-      onSkip: () => log.warn(`Volumenes de ${svc.name} saltados.`),
+      onSkip: () => { log.warn(`Volumenes de ${svc.name} saltados.`); },
     };
     await confirmStep(stepVols, async () => {
       log.out(`  restaurando ${tarList.length} volumen(es)...`);
@@ -327,7 +347,7 @@ async function createAndProvisionService(ctx: Ctx) {
         `Accion:   gunzip -c | docker exec ... psql/mysql/mongorestore`,
       ],
       optional: true,
-      onSkip: () => log.warn(`Importacion de BD saltada para ${svc.name}.`),
+      onSkip: () => { log.warn(`Importacion de BD saltada para ${svc.name}.`); },
     };
     await confirmStep(stepDump, async () => {
       const remoteDump = `${remoteTmp}/x/${bundle.bundleDir}/services/${slug}/dump.sql.gz`;
