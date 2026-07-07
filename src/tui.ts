@@ -13,7 +13,7 @@ import {
   upsertServer,
   type Server,
 } from "./db.js";
-import { runBackup } from "./commands/backup.js";
+import { runBackup, BACKUPS_DIR } from "./commands/backup.js";
 import { runRestoreFlow } from "./commands/restore.js";
 import { renderServersTable, renderServerDetail } from "./ui-render.js";
 import { renderManifest } from "./ui-bundle.js";
@@ -646,7 +646,7 @@ async function bundlesSubmenu(): Promise<void> {
       choices: [
         ...files.map((f) => ({
           name: `${f.name}   ${humanBytes(f.size)}  ${f.mtime.toISOString().slice(0, 10)}`,
-          value: path.join("./backups", f.name),
+          value: path.join(BACKUPS_DIR, f.name),
         })),
         { name: "<- Cancelar", value: "__cancel__" },
       ],
@@ -707,7 +707,7 @@ async function runFlow(label: string, fn: () => Promise<void>): Promise<void> {
 async function listBundleFiles(): Promise<
   { name: string; size: number; mtime: Date }[]
 > {
-  const dir = "./backups";
+  const dir = BACKUPS_DIR;
   try {
     const entries = await fs.readdir(dir, { withFileTypes: true });
     const out: { name: string; size: number; mtime: Date }[] = [];

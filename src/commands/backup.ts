@@ -42,6 +42,15 @@ import type {
 const REMOTE_TMP = "/tmp";
 
 /**
+ * Layout de archivos locales:
+ *   ./backups/                  bundles (.tar.gz) - los backups reales
+ *   ./backups/scripts/          scripts bash generados (.sh) - input al VPS
+ *   ./backups/test-*            staging temporal (dev-restore-test)
+ */
+export const BACKUPS_DIR = "./backups";
+export const SCRIPTS_DIR = "./backups/scripts";
+
+/**
  * Flags:
  *   --from <id>        server source
  *   --auto-select      marca todo por servicio
@@ -89,7 +98,7 @@ export async function runBackup(args: string[]): Promise<void> {
     }
   } else {
     log.warn(
-      `No hay target configurado. El bundle quedara en ./backups/ sin importar automaticamente.`
+      `No hay target configurado. El bundle quedara en ${BACKUPS_DIR}/ sin importar automaticamente.`
     );
     log.out(
       `  Para configurar target:  npm run servers -- add  (marca como "target")`
@@ -243,7 +252,7 @@ export async function runBackup(args: string[]): Promise<void> {
     generatedAt: new Date().toISOString(),
   };
   const script = generateBackupScript(plan);
-  const localScript = path.join("./backups", `${bundleName}.sh`);
+  const localScript = path.join(SCRIPTS_DIR, `${bundleName}.sh`);
   await fs.mkdir(path.dirname(localScript), { recursive: true });
   await fs.writeFile(localScript, script, { mode: 0o600 });
   log.ok(`Script local: ${localScript}`);
@@ -314,14 +323,14 @@ export async function runBackup(args: string[]): Promise<void> {
     title: "Descargar bundle a tu PC",
     plan: [
       `Origen:  ${sshTarget.username}@${sshTarget.host}:${remoteBundle}`,
-      `Destino: ${path.join("./backups", `${bundleName}.tar.gz`)}`,
+      `Destino: ${path.join(BACKUPS_DIR, `${bundleName}.tar.gz`)}`,
       `Tamano:  ${humanBytes(size)}`,
     ],
   };
-  let localBundle = path.join("./backups", `${bundleName}.tar.gz`);
+  let localBundle = path.join(BACKUPS_DIR, `${bundleName}.tar.gz`);
   await confirmStep(stepPlanDownload, async () => {
     log.step(6, "Bajando backup a tu PC");
-    localBundle = path.join("./backups", `${bundleName}.tar.gz`);
+    localBundle = path.join(BACKUPS_DIR, `${bundleName}.tar.gz`);
     await ssh.downloadFile(remoteBundle, localBundle);
     const stat = await fs.stat(localBundle);
     log.ok(`Bundle en tu PC: ${localBundle} (${humanBytes(stat.size)})`);

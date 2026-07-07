@@ -17,6 +17,7 @@ import {
   setDebugMode,
   isAborted,
 } from "../step.js";
+import { BACKUPS_DIR } from "./backup.js";
 
 /**
  * Flujo restore end-to-end contra Dokploy Contabo. Usa la BD multi-server
@@ -161,7 +162,7 @@ async function resolveBundleArg(args: string[]): Promise<string> {
   }
   if (bundlePath) return path.resolve(bundlePath);
 
-  const dir = "./backups";
+  const dir = BACKUPS_DIR;
   const list = await fs
     .readdir(dir)
     .catch(() => [])
