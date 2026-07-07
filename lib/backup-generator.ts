@@ -26,10 +26,17 @@ export function generateBackupScript(plan: BackupPlan): string {
   lines.push("# ============================================================");
   lines.push("set -euo pipefail");
   lines.push("");
+  lines.push(`# Trabajar SIEMPRE en el mismo dir donde el CLI espera el bundle (/tmp).`);
+  lines.push(`# Sin esto, los paths relativos './onefit-backup-...' se resuelven desde`);
+  lines.push(`# el home del usuario SSH y el CLI no encuentra el .tar.gz final.`);
+  lines.push(`WORK_DIR="\${REMOTE_TMP:-/tmp}"`);
+  lines.push(`mkdir -p "\${WORK_DIR}"`);
+  lines.push(`cd "\${WORK_DIR}"`);
+  lines.push("");
   lines.push(`PROJECT_ID="${project.projectId}"`);
   lines.push(`PROJECT_SLUG="${projectSlug}"`);
   lines.push(`BUNDLE="${bundleName}"`);
-  lines.push(`OUT="${outDir}"`);
+  lines.push(`OUT="\${WORK_DIR}/${bundleName}"`);
   lines.push("");
 
 // DEBUG: listar containers para entender la nomina que usa Dokploy en este VPS

@@ -284,7 +284,7 @@ export async function runBackup(args: string[]): Promise<void> {
   };
   await confirmStep(stepPlanRun, async () => {
     log.step(5, "Ejecutando backup en el VPS Viejo");
-    const run = await ssh.exec(`bash ${remoteScript}`, {
+    const run = await ssh.exec(`REMOTE_TMP=${REMOTE_TMP} bash ${remoteScript}`, {
       onStdout: (chunk: Buffer) => process.stdout.write(`   ${chunk.toString()}`),
       onStderr: (chunk: Buffer) => process.stderr.write(`   ${chunk.toString()}`),
     });
