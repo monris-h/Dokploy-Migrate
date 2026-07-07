@@ -439,8 +439,21 @@ async function fetchServiceDetail(
   }
 
   try {
-    const data = await dokployFetch<Record<string, unknown>>(conn, path);
-    log(`      .one(${entry.kind}) id=${id.slice(0, 12)}... -> OK (${Object.keys(data).length} keys)`);
+    const raw = await dokployFetch<Record<string, unknown>>(conn, path);
+    // Unwrap respuestas anidadas tipo {data: {...}} o {result: {data: {...}}}
+    const data =
+      (raw["data"] as Record<string, unknown> | undefined) ??
+      (raw["result"] as Record<string, unknown> | undefined)?.["data"] as Record<string, unknown> | undefined ??
+      raw;
+    log(`      .one(${entry.kind}) id=${id.slice(0, 12)}... -> OK (keys: ${Object.keys(data).slice(0, 15).join(", ")})`);
+    // Imprimir SIEMPRE si encontro mounts para que el usuario lo vea
+    const mountKeys = ["Mounts", "mounts", "Volumes", "volumes", "mountsList"];
+    for (const mk of mountKeys) {
+      const v = data[mk];
+      if (Array.isArray(v) && v.length > 0) {
+        log(`      -> ${mk}: ${v.length} items (ej: ${JSON.stringify(v[0]).slice(0, 150)})`);
+      }
+    }
     return data;
   } catch (e) {
     log(`      .one(${entry.kind}) id=${id.slice(0, 12)}... -> FAIL: ${(e as Error).message}`);
