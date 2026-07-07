@@ -21,7 +21,7 @@ import {
   type ExtractedBundle,
   type ManifestService,
 } from "./bundle.js";
-import type { Connection } from "./types.js";
+import type { Connection, DatabaseType } from "./types.js";
 import { log } from "../src/ui.js";
 import { confirmStep, isAborted, type StepContext } from "../src/step.js";
 
