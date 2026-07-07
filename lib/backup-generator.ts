@@ -37,53 +37,37 @@ export function generateBackupScript(plan: BackupPlan): string {
   lines.push(`docker ps -a --format '  {{.Names}}  | project={{.Label "com.docker.compose.project"}}  | service={{.Label "com.docker.compose.service"}}' 2>/dev/null || docker ps -a --format '  {{.Names}}'`);
   lines.push("");
 
-  // resolve_container con multiples fallbacks
+  // resolve_container - Dokploy usa Docker Swarm, los nombres tienen hash
+  // aleatorio (ej: onefit-web-wj4f0j.1.ryf39ttz79fzeyxt1i0j50m3a).
+  // No se puede hardcodear; hay que hacer grep por prefijo.
   lines.push(`resolve_container() {
-  local service="$1"          # nombre legible del servicio (ej: "web")
+  local service="$1"          # nombre legible (ej: "web")
   local appname="\${2:-}"      # appName/slug exacto (ej: "web" o "onefit-postgres"); opcional
 
-  # Si nos pasan appname explicito, probarlo primero
-  if [ -n "\${appname}" ]; then
-    local candidates=(
-      "\${appname}"
-      "\${appname}-1"
-      "\${PROJECT_SLUG}-\${appname}-1"
-      "\${PROJECT_SLUG}-\${appname}"
-      "\${PROJECT_SLUG}_\${appname}_1"
-      "\${PROJECT_ID}-\${appname}-1"
-      "\${PROJECT_ID}-\${appname}"
-      "\${PROJECT_ID}_\${appname}_1"
-    )
-    for c in "\${candidates[@]}"; do
-      if docker ps -a --format '{{.Names}}' | grep -qx "$c"; then
-        echo "$c"; return 0
-      fi
-    done
+  # Estrategia 1: grep por prefijo <PROJECT_SLUG>-<servicio> o <PROJECT_SLUG>-<appname>
+  # Esto matchea nombres como onefit-web-wj4f0j.1.ryf39ttz79fzeyxt1i0j50m3a
+  local prefixes=()
+  if [ -n "\${appname}" ] && [ "\${appname}" != "\${service}" ]; then
+    prefixes+=("\${PROJECT_SLUG}-\${appname}" "\${service}")
+  else
+    prefixes+=("\${PROJECT_SLUG}-\${service}")
   fi
+  prefixes+=("\${PROJECT_ID}-\${service}" "\${PROJECT_SLUG}_\${service}")
 
-  # Fallback: probar con el nombre legible
-  local candidates=(
-    "\${service}"
-    "\${service}-1"
-    "\${PROJECT_SLUG}-\${service}-1"
-    "\${PROJECT_SLUG}-\${service}"
-    "\${PROJECT_ID}-\${service}-1"
-    "\${PROJECT_ID}-\${service}"
-    "\${PROJECT_ID}_\${service}_1"
-  )
-  for c in "\${candidates[@]}"; do
-    if docker ps -a --format '{{.Names}}' | grep -qx "$c"; then
-      echo "$c"; return 0
-    fi
+  for prefix in "\${prefixes[@]}"; do
+    local hit
+    hit=$(docker ps -a --format '{{.Names}}' | grep -F "^\${prefix}" | head -n1 || true)
+    if [ -n "\${hit}" ]; then echo "\${hit}"; return 0; fi
   done
 
-  # Fallback final: buscar por label (Dokploy pone label com.docker.compose.service)
+  # Estrategia 2: filtrar todos los containers del proyecto por label
+  # (Dokploy pone labels com.docker.compose.project y com.docker.compose.service)
   local by_label
-  by_label=$(docker ps -a --filter "label=com.docker.compose.service=\${appname:-\${service}}" --format '{{.Names}}' | head -n1 || true)
+  by_label=$(docker ps -a --filter "label=com.docker.compose.project=\${PROJECT_SLUG}" --format '{{.Names}} {{.Label "com.docker.compose.service"}}' | grep -E " \${appname:-\${service}}$" | awk '{print $1}' | head -n1 || true)
   if [ -n "\${by_label}" ]; then echo "\${by_label}"; return 0; fi
 
-  # Fallback grep flexible (case-insensitive) - ultimo recurso
-  docker ps -a --format '{{.Names}}' | grep -i "\${service}" | head -n1 || true
+  # Estrategia 3: fallback grep flexible (case-insensitive) - ultimo recurso
+  docker ps -a --format '{{.Names}}' | grep -i "\${service}" | grep -F "\${PROJECT_SLUG}" | head -n1 || true
 }
 `);
   lines.push("");
@@ -118,7 +102,7 @@ echo ""`);
     if (sel.compose) {
       lines.push(`  # Definicion del servicio desde el path interno de Dokploy`);
       lines.push(`  mkdir -p "${dir}/dokploy"`);
-      lines.push(`  for base in "/etc/dokploy/compose/\${PROJECT_SLUG}" "/etc/dokploy/compose/\${PROJECT_ID}" "/etc/dokploy/compose/\${appname}"; do`);
+      lines.push(`  for base in "/etc/dokploy/compose/\${PROJECT_SLUG}" "/etc/dokploy/compose/\${PROJECT_ID}" "/etc/dokploy/compose/\${CONTAINER}"; do`);
       lines.push(`    if [ -d "$base" ]; then`);
       lines.push(`      cp -r "$base"/* "${dir}/dokploy/" 2>/dev/null || true`);
       lines.push(`      break`);
