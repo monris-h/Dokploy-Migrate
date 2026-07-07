@@ -126,9 +126,23 @@ export async function runRestore(opts: RestoreOptions): Promise<RestoreResult> {
     } catch (e) {
       if (isAborted(e)) throw e;
       log.err(`Error creando servicio ${svc.name}: ${(e as Error).message}`);
+      log.warn(`  Continuando con el resto del restore (volumenes/dumps se intentan al final).`);
       serviceResults[svc.name] = { id: "", skipped: true };
     }
   }
+
+  // 4) FASE BEST-EFFORT: restaurar TODOS los volumenes del bundle como Docker
+  //    volumes en Contabo, independientemente de si la app/postgres se creo.
+  //    Asi, si el deploy de git fallo, igual quedan los volumenes con la data.
+  log.step(4, "Restaurando volumenes (best-effort)");
+  await restoreAllVolumesBestEffort(ssh, bundle, remoteTmp);
+
+  // 5) FASE BEST-EFFORT: restaurar dumps de BD si el container existe,
+  //    o dejarlos en disco para import manual si no.
+  log.step(5, "Restaurando dumps de BD (best-effort)");
+  await restoreAllDumpsBestEffort(ssh, bundle, remoteTmp, serviceResults);
+
+  log.step(99, "Restauracion completa");
 
   log.step(99, "Restauracion completa");
   log.out(`Proyecto: ${projectName}`);
@@ -517,4 +531,134 @@ function shellQuote(s: string): string {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+// ---------------------------------------------------------------------------
+// Best-effort restore phases
+//
+// Estas fases corren SIEMPRE al final del restore, incluso si la creacion
+// de algunos servicios fallo. El objetivo es que si el deploy de git se
+// rompe (porque falta una GitHub Account en el VPS Nuevo, etc.), los volumenes
+// y los dumps de BD se restauren de todas formas, porque la data es lo
+// que el usuario realmente quiere preservar.
+
+// ---------------------------------------------------------------------------
+
+async function restoreAllVolumesBestEffort(
+  ssh: Ssh,
+  bundle: ExtractedBundle,
+  remoteTmp: string
+): Promise<void> {
+  const allVolumes = bundle.paths.volumesByName;
+  const serviceNames = Object.keys(allVolumes);
+  if (serviceNames.length === 0) {
+    log.out(`  No hay volumenes en el bundle.`);
+    return;
+  }
+
+  let restored = 0;
+  let failed = 0;
+
+  for (const [svcName, volTars] of Object.entries(allVolumes)) {
+    for (const localTar of volTars) {
+      const baseName = path.basename(localTar);
+      const target = extractVolumeTarget(baseName);
+      if (!target) {
+        log.warn(`  [vol] ${baseName}: nombre no reconocido, saltando.`);
+        continue;
+      }
+
+      // Subir el .tar.gz al VPS Nuevo
+      const remoteTar = `${remoteTmp}/x/${bundle.bundleDir}/services/${slugify(svcName)}/volumes/${baseName}`;
+      try {
+        await ssh.uploadFile(localTar, remoteTar);
+      } catch (e) {
+        log.warn(`  [vol] ${baseName}: fallo subir al VPS (${(e as Error).message}).`);
+        failed++;
+        continue;
+      }
+
+      if (target.kind === "named") {
+        // Crear el volume con el nombre original y restaurar contenido
+        try {
+          await ssh.exec(`docker volume create ${shellQuote(target.name)} || true`);
+          await ssh.exec(
+            `docker run --rm -v ${shellQuote(target.name)}:/to -v ${shellQuote(path.dirname(remoteTar))}:/from alpine sh -c 'cd /from && tar -xzf ${shellQuote(path.basename(remoteTar))} -C /to'`
+          );
+          log.ok(`  [vol] named '${target.name}' restaurado (${baseName})`);
+          restored++;
+        } catch (e) {
+          log.warn(`  [vol] named '${target.name}': fallo restaurar (${(e as Error).message}).`);
+          log.out(`         .tar.gz queda en ${remoteTar} para restaurar manual.`);
+          failed++;
+        }
+      } else {
+        // Bind mount: el archivo .tar.gz contiene los archivos que iban en el
+        // path del host. Dejamos el .tar.gz en disco para que el usuario lo
+        // extraiga en el path destino cuando el deploy este listo.
+        log.out(`  [vol] bind mount '${target.dst}': .tar.gz dejado en ${remoteTar}`);
+        log.out(`         Para restaurar: ssh root@contabo "tar -xzf ${remoteTar} -C <path-origen>"`);
+        restored++;
+      }
+    }
+  }
+
+  log.out(`  Volumenes: ${restored} OK, ${failed} con error (best-effort)`);
+}
+
+// ---------------------------------------------------------------------------
+
+async function restoreAllDumpsBestEffort(
+  ssh: Ssh,
+  bundle: ExtractedBundle,
+  remoteTmp: string,
+  serviceResults: RestoreResult["serviceResults"]
+): Promise<void> {
+  const dumpByName = bundle.paths.dumpByName;
+  const serviceNames = Object.keys(dumpByName);
+  if (serviceNames.length === 0) {
+    log.out(`  No hay dumps de BD en el bundle.`);
+    return;
+  }
+
+  let imported = 0;
+  let skipped = 0;
+
+  for (const [svcName, localDump] of Object.entries(dumpByName)) {
+    const baseName = path.basename(localDump);
+    const remoteDump = `${remoteTmp}/x/${bundle.bundleDir}/services/${slugify(svcName)}/dump.sql.gz`;
+
+    try {
+      await ssh.uploadFile(localDump, remoteDump);
+    } catch (e) {
+      log.warn(`  [dump] ${svcName}: fallo subir dump al VPS (${(e as Error).message}).`);
+      skipped++;
+      continue;
+    }
+
+    // Si el servicio se creo y tiene container, intentar importar
+    const info = serviceResults[svcName];
+    const container = info?.container ?? "";
+    const databaseType = bundle.manifest.services.find((s) => s.name === svcName)?.databaseType ?? "";
+
+    if (info && !info.skipped && container && databaseType) {
+      try {
+        await importDump(ssh, container, databaseType as DatabaseType, remoteDump);
+        log.ok(`  [dump] ${svcName}: importado en container ${container}`);
+        imported++;
+      } catch (e) {
+        log.warn(`  [dump] ${svcName}: container existe pero import fallo (${(e as Error).message}).`);
+        log.out(`         dump queda en ${remoteDump} para import manual.`);
+        skipped++;
+      }
+    } else {
+      // No hay container (servicio no se creo o no se detecto a tiempo)
+      log.out(`  [dump] ${svcName}: container no disponible, dump dejado en ${remoteDump}`);
+      log.out(`         Para importar manualmente cuando el servicio este listo:`);
+      log.out(`         docker exec -i <container> bash -c 'gunzip | psql -U postgres' < ${remoteDump}`);
+      skipped++;
+    }
+  }
+
+  log.out(`  Dumps: ${imported} importados, ${skipped} pendientes (best-effort)`);
 }
