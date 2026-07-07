@@ -69,8 +69,13 @@ export async function dokployFetch<T>(
 
   const text = await res.text();
   if (!res.ok) {
+    if (process.env.DEBUG_DOKPLOY) {
+      process.stderr.write(
+        `[DEBUG_DOKPLOY] ${path} -> ${res.status}\n  body: ${text.slice(0, 800)}\n`
+      );
+    }
     throw new DokployError(
-      `Dokploy respondio ${res.status} en ${path}`,
+      `Dokploy respondio ${res.status} en ${path}: ${text.slice(0, 200)}`,
       res.status,
       text
     );
