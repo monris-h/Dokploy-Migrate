@@ -72,31 +72,82 @@ export async function runRestoreFlow(opts: RestoreFlowOpts): Promise<void> {
   }
   log.ok(`Target: ${target.id}  -  ${target.label}`);
 
-  // 3) SSH connect
+  // 3) SSH connect (con retry si la key esta cifrada y falta passphrase)
   log.step(2, `Conexion SSH al VPS Nuevo  (${target.ssh.username}@${target.ssh.host}:${target.ssh.port ?? 22})`);
   let passwordSsh: string | undefined;
   let privateKeyPath = target.ssh.privateKeyPath;
+  let passphrase = target.ssh.passphrase;
+
   if (privateKeyPath && !existsSync(privateKeyPath)) {
     log.warn(`La key ${privateKeyPath} no esta accesible. Se pedira password.`);
     privateKeyPath = undefined;
   }
-  if (!privateKeyPath) {
+  if (!privateKeyPath && !passphrase) {
     const { pPassword } = await import("../prompts.js");
     passwordSsh = await pPassword(
       `Password SSH para ${target.ssh.username}@${target.ssh.host}:`
     );
   }
-  const sshTarget = {
+
+  const sshTarget: {
+    host: string;
+    port: number;
+    username: string;
+    privateKeyPath?: string;
+    password?: string;
+    passphrase?: string;
+  } = {
     host: target.ssh.host,
     port: target.ssh.port ?? 22,
     username: target.ssh.username,
     privateKeyPath,
     password: passwordSsh,
+    passphrase,
   };
 
   const ssh = new Ssh(sshTarget);
   log.info(`Conectando a ${sshTarget.username}@${sshTarget.host}:${sshTarget.port}...`);
-  await ssh.connect();
+
+  let lastErr: string | undefined;
+  try {
+    await ssh.connect();
+  } catch (e) {
+    lastErr = (e as Error).message;
+  }
+
+  // Si fallo por passphrase cifrada y no tenemos una, pedirla y reintentar
+  if (lastErr && /passphrase|Encrypted/i.test(lastErr) && !passphrase && privateKeyPath) {
+    log.warn(`La key esta cifrada. Necesito la passphrase.`);
+    const { pPassword, pConfirm } = await import("../prompts.js");
+    passphrase = await pPassword("Passphrase de la key:");
+    if (passphrase) {
+      sshTarget.passphrase = passphrase;
+      log.info(`Reintentando con passphrase...`);
+      try {
+        await ssh.connect();
+        lastErr = undefined;
+        // Ofrecer guardar la passphrase para no pedirla de nuevo
+        const save = await pConfirm({
+          message: `Conexion OK. Guardar la passphrase en este server (db.json)? Asi no te la pido cada vez.`,
+          default: true,
+        });
+        if (save) {
+          const { upsertServer } = await import("../db.js");
+          await upsertServer({
+            ...target,
+            ssh: { ...target.ssh, passphrase },
+          });
+          log.ok(`Passphrase guardada para ${target.id}.`);
+        }
+      } catch (e2) {
+        lastErr = (e2 as Error).message;
+      }
+    }
+  }
+
+  if (lastErr) {
+    throw new Error(`Conexion SSH fallo: ${lastErr}`);
+  }
   log.ok("Conexion SSH establecida.");
   const v = await ssh.exec("docker --version");
   if (v.code !== 0) {
