@@ -86,7 +86,8 @@ main().catch((err) => {
     process.exit(0);
   }
   process.stderr.write(`\nERROR: ${(err as Error).message}\n`);
-  if (process.env.DEBUG) {
+  // Stack trace siempre, para que 'args is not iterable' sea ubicable
+  if ((err as Error).stack) {
     process.stderr.write(`\n${(err as Error).stack}\n`);
   }
   process.exit(1);
