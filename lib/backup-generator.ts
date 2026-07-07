@@ -331,11 +331,22 @@ function buildManifest(plan: BackupPlan) {
         kind: s.service.kind,
         databaseType: s.service.databaseType ?? null,
         image: s.service.image ?? null,
+        // Source
         sourceType: s.service.sourceType ?? null,
+        sourceProvider: s.service.sourceProvider ?? null,
+        sourceAccountId: s.service.sourceAccountId ?? null,
         repository: s.service.repository ?? null,
         branch: s.service.branch ?? null,
         commit: s.service.commit ?? null,
         buildPath: s.service.buildPath ?? null,
+        triggerType: s.service.triggerType ?? null,
+        watchPaths: s.service.watchPaths ?? null,
+        enableSubmodules: s.service.enableSubmodules ?? null,
+        // Build
+        buildType: s.service.buildType ?? null,
+        dockerfile: s.service.dockerfile ?? null,
+        dockerContextPath: s.service.dockerContextPath ?? null,
+        dockerBuildStage: s.service.dockerBuildStage ?? null,
         selection: s.selection,
       })),
     notes: [
@@ -343,7 +354,8 @@ function buildManifest(plan: BackupPlan) {
       "El bundle tar.gz contiene ./" + plan.bundleName + "/ con manifest.json y RESTORE.md.",
       "Los .env del container estan en services/<slug>/env.json - NO los subas a un repo publico.",
       "READ-ONLY: el script no modifica Dokploy ni los servicios.",
-      "Servicios con sourceType=git se restauran haciendo deploy desde el repo en Contabo (no se clona el codigo, solo se restaura env, compose y volumenes).",
+      "Servicios con sourceType=git se restauran haciendo deploy desde el repo en Contabo (no se clona el codigo, solo se restaura env, build settings y volumenes).",
+      "Para que el restore git funcione, el VPS Nuevo (Contabo) debe tener configurada la misma GitHub Account en Dokploy. Si no, el POST falla con un error claro sobre la cuenta.",
     ],
   };
 }

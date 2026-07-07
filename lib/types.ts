@@ -27,8 +27,13 @@ export type ServiceSummary = {
   envId?: string;
   /** Dokploy projectId al que pertenece este service. */
   projectId?: string;
-  /** Tipo de fuente: "image" (registry/docker) o "git" (repo). */
+  // -------- Source (git / image / compose) --------
+  /** Tipo de fuente: "image" | "git" | "docker-compose" */
   sourceType?: "image" | "git" | "docker-compose";
+  /** Provider del source git (github, gitlab, bitbucket, gitea, docker, git) */
+  sourceProvider?: string;
+  /** ID de la cuenta de github/gitlab/etc. conectada en Dokploy */
+  sourceAccountId?: string;
   /** Repo URL si viene de git. */
   repository?: string;
   /** Branch a deployar. */
@@ -37,6 +42,21 @@ export type ServiceSummary = {
   commit?: string;
   /** Path dentro del repo (para monorepos). */
   buildPath?: string;
+  /** Trigger: "push" | "tag" | "manual" */
+  triggerType?: string;
+  /** Watch paths (array de globs). */
+  watchPaths?: string[];
+  /** Si el repo tiene submodules. */
+  enableSubmodules?: boolean;
+  // -------- Build --------
+  /** Tipo de build: "dockerfile" | "railpack" | "nixpacks" | "heroku" | "paketo" | "static" */
+  buildType?: string;
+  /** Path al Dockerfile dentro del repo (default "Dockerfile") */
+  dockerfile?: string;
+  /** Docker context path (default ".") */
+  dockerContextPath?: string;
+  /** Stage especifico en multi-stage Dockerfile */
+  dockerBuildStage?: string;
 };
 
 export type DatabaseType = "postgres" | "mysql" | "mariadb" | "mongo" | "redis";

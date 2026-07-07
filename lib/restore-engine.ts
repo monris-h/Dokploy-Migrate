@@ -211,18 +211,31 @@ async function createAndProvisionService(ctx: Ctx) {
           environmentId,
           name: svc.name,
           image,
-          // Si el original se deployaba desde git, pasamos el repo + branch
-          // al create en Contabo para que vuelva a clonar en lugar de pull de imagen.
+          // Source
+          sourceType: svc.sourceType ?? undefined,
+          sourceProvider: svc.sourceProvider ?? undefined,
+          sourceAccountId: svc.sourceAccountId ?? undefined,
           repository: svc.repository ?? undefined,
           branch: svc.branch ?? undefined,
           commit: svc.commit ?? undefined,
           buildPath: svc.buildPath ?? undefined,
+          triggerType: svc.triggerType ?? undefined,
+          watchPaths: svc.watchPaths ?? undefined,
+          enableSubmodules: svc.enableSubmodules ?? undefined,
+          // Build
+          buildType: svc.buildType ?? undefined,
+          dockerfile: svc.dockerfile ?? undefined,
+          dockerContextPath: svc.dockerContextPath ?? undefined,
+          dockerBuildStage: svc.dockerBuildStage ?? undefined,
           env: envVars,
         });
         out.id = id;
         log.ok(`  application creada: ${id}`);
         if (svc.repository) {
           log.out(`    deploy desde git: ${svc.repository}@${svc.branch ?? "main"}`);
+          if (svc.buildType) log.out(`    buildType: ${svc.buildType}`);
+          if (svc.dockerfile) log.out(`    dockerfile: ${svc.dockerfile}`);
+          if (svc.buildPath) log.out(`    buildPath: ${svc.buildPath}`);
         } else {
           log.out(`    deploy desde imagen: ${image}`);
         }

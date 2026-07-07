@@ -314,7 +314,15 @@ function extractServicesFromEnv(
         projectId,
         databaseType: entry.databaseType,
         image: (it["dockerImage"] as string | undefined) ?? undefined,
+        // -------- Source --------
         sourceType: (it["sourceType"] as ServiceSummary["sourceType"]) ?? undefined,
+        sourceProvider: (it["sourceType"] as string | undefined) ?? undefined,
+        sourceAccountId:
+          (it["githubAccountId"] as string | undefined) ??
+          (it["gitlabAccountId"] as string | undefined) ??
+          (it["bitbucketAccountId"] as string | undefined) ??
+          (it["giteaAccountId"] as string | undefined) ??
+          undefined,
         repository:
           (it["repository"] as string | undefined) ??
           (it["customGitUrl"] as string | undefined) ??
@@ -325,6 +333,18 @@ function extractServicesFromEnv(
           undefined,
         commit: (it["commit"] as string | undefined) ?? undefined,
         buildPath: (it["buildPath"] as string | undefined) ?? undefined,
+        triggerType: (it["triggerType"] as string | undefined) ?? undefined,
+        watchPaths: Array.isArray(it["watchPaths"])
+          ? (it["watchPaths"] as string[])
+          : undefined,
+        enableSubmodules: typeof it["enableSubmodules"] === "boolean"
+          ? (it["enableSubmodules"] as boolean)
+          : undefined,
+        // -------- Build --------
+        buildType: (it["buildType"] as string | undefined) ?? undefined,
+        dockerfile: (it["dockerfile"] as string | undefined) ?? undefined,
+        dockerContextPath: (it["dockerContextPath"] as string | undefined) ?? undefined,
+        dockerBuildStage: (it["dockerBuildStage"] as string | undefined) ?? undefined,
       });
     }
   }
@@ -706,14 +726,22 @@ export type CreateApplicationOpts = {
   environmentId: string;
   name: string;
   image?: string;
-  /** Si viene de git, el repo URL. */
+  // -------- Source --------
+  sourceType?: "image" | "git" | "docker-compose";
+  sourceProvider?: string;
+  sourceAccountId?: string;
   repository?: string;
-  /** Branch del repo. */
   branch?: string;
-  /** Commit SHA del repo (opcional). */
   commit?: string;
-  /** Path dentro del repo (monorepos). */
   buildPath?: string;
+  triggerType?: string;
+  watchPaths?: string[];
+  enableSubmodules?: boolean;
+  // -------- Build --------
+  buildType?: string;
+  dockerfile?: string;
+  dockerContextPath?: string;
+  dockerBuildStage?: string;
   /** Variables de entorno que se aplican al servicio. */
   env?: Record<string, string>;
 };
@@ -731,19 +759,40 @@ export async function dokployCreateApplication(
     projectId: opts.projectId,
     environmentId: opts.environmentId,
     appName: slugName(opts.name),
-    sourceType: isGit ? "git" : (opts.image ? "image" : "git"),
+    sourceType: opts.sourceType ?? (isGit ? "git" : (opts.image ? "image" : "git")),
     dockerImage: opts.image ?? "",
     env: envString,
     replicas: 1,
     restartPolicy: "unless-stopped",
   };
 
-  if (isGit) {
-    body.repository = opts.repository;
-    body.branch = opts.branch ?? "main";
+  if (isGit || opts.sourceType === "git") {
+    if (opts.repository) body.repository = opts.repository;
+    if (opts.branch) body.branch = opts.branch;
     if (opts.commit) body.commit = opts.commit;
     if (opts.buildPath) body.buildPath = opts.buildPath;
+    if (opts.sourceProvider) body.sourceProvider = opts.sourceProvider;
+    if (opts.sourceAccountId) {
+      // Dokploy espera el id de la cuenta segun el provider
+      const key =
+        opts.sourceProvider === "gitlab" ? "gitlabAccountId" :
+        opts.sourceProvider === "bitbucket" ? "bitbucketAccountId" :
+        opts.sourceProvider === "gitea" ? "giteaAccountId" :
+        "githubAccountId";
+      body[key] = opts.sourceAccountId;
+    }
+    if (opts.triggerType) body.triggerType = opts.triggerType;
+    if (opts.watchPaths && opts.watchPaths.length > 0) body.watchPaths = opts.watchPaths;
+    if (typeof opts.enableSubmodules === "boolean") {
+      body.enableSubmodules = opts.enableSubmodules;
+    }
   }
+
+  // Build settings (aplican tanto a git como a docker image con build)
+  if (opts.buildType) body.buildType = opts.buildType;
+  if (opts.dockerfile) body.dockerfile = opts.dockerfile;
+  if (opts.dockerContextPath) body.dockerContextPath = opts.dockerContextPath;
+  if (opts.dockerBuildStage) body.dockerBuildStage = opts.dockerBuildStage;
 
   const { ids } = await createViaEndpoint(conn, {
     restPath: "/api/application.create",
