@@ -32,57 +32,100 @@ export function generateBackupScript(plan: BackupPlan): string {
   lines.push(`OUT="${outDir}"`);
   lines.push("");
 
-  // DEBUG: listar containers para entender la nomina que usa Dokploy en este VPS
+// DEBUG: listar containers para entender la nomina que usa Dokploy en este VPS
   lines.push(`echo "==> Containers presentes en este VPS (para debug de nombres):"`);
-  lines.push(`docker ps -a --format '  {{.Names}}  | project={{.Label "com.docker.compose.project"}}  | service={{.Label "com.docker.compose.service"}}' 2>/dev/null || docker ps -a --format '  {{.Names}}'`);
+  lines.push(`docker ps -a --format '  {{.Names}}' | head -50`);
+  lines.push("");
+  lines.push(`echo "==> Containers que parecen ser del proyecto '\${PROJECT_SLUG}':"`);
+  lines.push(`docker ps -a --format '{{.Names}}' | grep -F "\${PROJECT_SLUG}-" || echo "  (ninguno por nombre)"`);
+  lines.push(`docker ps -a --filter "label=com.docker.compose.project=\${PROJECT_SLUG}" --format '  {{.Names}}  (via label)' 2>/dev/null || true`);
   lines.push("");
 
-  // resolve_container - Dokploy usa Docker Swarm con nombres tipo
-  // onefit-web-wj4f0j.1.ryf39ttz79fzeyxt1i0j50m3a. El appName que devuelve
-  // la API puede ser 'web' (corto) o 'onefit-db-e19t4w' (task name con
-  // prefijo del proyecto). Manejamos ambos casos.
+  // resolve_container con muchas condiciones fallback.
+  // Dokploy/Swarm usa nombres con hash aleatorio (onefit-web-wj4f0j.1.xxxxxx).
+  // El appName de la API puede venir como 'web' (corto) o 'onefit-db-e19t4w'
+  // (con slug+service+taskID). Filtramos primero por proyecto y despues
+  // buscamos match por service/appname dentro de esa sublista.
   lines.push(`resolve_container() {
-  local service="$1"          # nombre legible (ej: "web")
-  local appname="\${2:-}"      # appName/slug exacto; puede tener o no el slug del proyecto
+  local service="\$1"          # nombre legible (ej: "web" o "onefit-postgres")
+  local appname="\${2:-}"      # appName/slug que devuelve la API
+  local svc_id="\${3:-}"       # ID dokploy del service (applicationId/postgresId/etc.); opcional
 
-  # Construir lista de prefijos a probar (orden importa: especifico antes que generico)
-  local prefixes=()
-
-  if [ -n "\${appname}" ]; then
-    if [[ "\${appname}" == "\${PROJECT_SLUG}-"* ]]; then
-      # appname ya incluye el slug (ej: onefit-db-e19t4w), usarlo directo
-      prefixes+=("\${appname}")
-    else
-      # appname es corto (ej: web, db), probar con y sin slug
-      prefixes+=("\${PROJECT_SLUG}-\${appname}" "\${appname}")
-    fi
+  # Paso 1: filtrar containers que pertenecen al proyecto.
+  #         Intentar por nombre primero, despues por label.
+  local proj_containers
+  proj_containers=$(docker ps -a --format '{{.Names}}' | grep -F "\${PROJECT_SLUG}-" || true)
+  if [ -z "\${proj_containers}" ]; then
+    proj_containers=$(docker ps -a --filter "label=com.docker.compose.project=\${PROJECT_SLUG}" --format '{{.Names}}' 2>/dev/null || true)
+  fi
+  if [ -z "\${proj_containers}" ]; then
+    proj_containers=$(docker ps -a --format '{{.Names}}')
   fi
 
-  if [ -n "\${service}" ] && [ "\${service}" != "\${appname}" ]; then
-    if [[ "\${service}" == "\${PROJECT_SLUG}-"* ]]; then
-      prefixes+=("\${service}")
-    else
-      prefixes+=("\${PROJECT_SLUG}-\${service}")
+  # Paso 2: probar muchos patrones de match contra esa lista.
+  local hit
+
+  # E1: match exacto del nombre completo del container
+  for cand in "\${appname}" "\${service}"; do
+    if [ -n "\${cand}" ]; then
+      hit=$(echo "\${proj_containers}" | grep -Fx "\${cand}" | head -n1 || true)
+      [ -n "\${hit}" ] && { echo "\${hit}"; return 0; }
     fi
-  fi
-
-  # Fallbacks finales
-  prefixes+=("\${PROJECT_ID}-\${service}" "\${PROJECT_ID}-\${appname}")
-
-  for prefix in "\${prefixes[@]}"; do
-    [ -z "\${prefix}" ] && continue
-    local hit
-    hit=$(docker ps -a --format '{{.Names}}' | grep -F "^\${prefix}" | head -n1 || true)
-    if [ -n "\${hit}" ]; then echo "\${hit}"; return 0; fi
   done
 
-  # Estrategia 2: filtrar por label del proyecto + match por service
-  local by_label
-  by_label=$(docker ps -a --filter "label=com.docker.compose.project=\${PROJECT_SLUG}" --format '{{.Names}} {{.Label "com.docker.compose.service"}}' | grep -E "( \${appname}\$| \${service}\$|-\${appname}\$|-\${service}\$)" | awk '{print \$1}' | head -n1 || true)
-  if [ -n "\${by_label}" ]; then echo "\${by_label}"; return 0; fi
+  # E2: el service/appname aparece como TOKEN separado por '-' o '.' en el nombre
+  #     (ej: onefit-db-e19t4w.1.xxxxxx matchea token 'db' o 'e19t4w')
+  for cand in "\${appname}" "\${service}"; do
+    if [ -n "\${cand}" ]; then
+      hit=$(echo "\${proj_containers}" | grep -E "[-.]\${cand}([-.]|\$)" | head -n1 || true)
+      [ -n "\${hit}" ] && { echo "\${hit}"; return 0; }
+    fi
+  done
 
-  # Estrategia 3: grep flexible - ultimo recurso
-  docker ps -a --format '{{.Names}}' | grep -F "\${PROJECT_SLUG}-" | grep -iE "\${appname:-\${service}}" | head -n1 || true
+  # E3: empieza con <slug>-<cand>
+  for cand in "\${appname}" "\${service}"; do
+    if [ -n "\${cand}" ]; then
+      hit=$(echo "\${proj_containers}" | grep -F "^\${PROJECT_SLUG}-\${cand}" | head -n1 || true)
+      [ -n "\${hit}" ] && { echo "\${hit}"; return 0; }
+    fi
+  done
+
+  # E4: empieza con <slug><cand> (sin guion, por si estan concatenados)
+  for cand in "\${appname}" "\${service}"; do
+    if [ -n "\${cand}" ]; then
+      hit=$(echo "\${proj_containers}" | grep -F "^\${PROJECT_SLUG}\${cand}" | head -n1 || true)
+      [ -n "\${hit}" ] && { echo "\${hit}"; return 0; }
+    fi
+  done
+
+  # E5: empieza con <projectId>-<cand>
+  for cand in "\${appname}" "\${service}"; do
+    if [ -n "\${cand}" ]; then
+      hit=$(echo "\${proj_containers}" | grep -F "^\${PROJECT_ID}-\${cand}" | head -n1 || true)
+      [ -n "\${hit}" ] && { echo "\${hit}"; return 0; }
+    fi
+  done
+
+  # E6: match por label Dokploy/Compose service (si existe)
+  if [ -n "\${svc_id}" ]; then
+    hit=$(docker ps -a --filter "label=dokploy.applicationId=\${svc_id}" --format '{{.Names}}' 2>/dev/null | head -n1 || true)
+    [ -n "\${hit}" ] && { echo "\${hit}"; return 0; }
+    hit=$(docker ps -a --filter "label=dokploy.postgresId=\${svc_id}" --format '{{.Names}}' 2>/dev/null | head -n1 || true)
+    [ -n "\${hit}" ] && { echo "\${hit}"; return 0; }
+    hit=$(docker ps -a --filter "label=com.docker.compose.service=\${appname}" --format '{{.Names}}' 2>/dev/null | head -n1 || true)
+    [ -n "\${hit}" ] && { echo "\${hit}"; return 0; }
+  fi
+
+  # E7: case-insensitive substring (ultimo recurso)
+  for cand in "\${appname}" "\${service}"; do
+    if [ -n "\${cand}" ]; then
+      hit=$(echo "\${proj_containers}" | grep -iF "\${cand}" | head -n1 || true)
+      [ -n "\${hit}" ] && { echo "\${hit}"; return 0; }
+    fi
+  done
+
+  # No encontrado
+  return 1
 }
 `);
   lines.push("");
@@ -107,10 +150,10 @@ echo ""`);
     lines.push(`# Servicio: ${s.service.name} (${s.service.kind}${s.service.databaseType ? "/" + s.service.databaseType : ""}) - appName=${appName}`);
     lines.push("# ----------------------------------------------------------");
     lines.push(`mkdir -p "${dir}"`);
-    lines.push(`CONTAINER="$(resolve_container '${s.service.name}' '${appName}' || true)"`);
+    lines.push(`CONTAINER="$(resolve_container '${s.service.name}' '${appName}' '${s.service.id}' || true)"`);
     lines.push(`if [ -z "\${CONTAINER:-}" ]; then`);
-    lines.push(`  echo "  [WARN] No encontre contenedor para '${s.service.name}' (appName='${appName}'). Saltando."`);
-    lines.push(`  echo "        Probe los nombres listados arriba con prefijo '\${PROJECT_SLUG}' y '\${PROJECT_ID}'."`);
+    lines.push(`  echo "  [WARN] No encontre contenedor para '${s.service.name}' (appName='${appName}', id='${s.service.id}'). Saltando."`);
+    lines.push(`  echo "        Probe 7 estrategias (E1..E7) contra \$(echo "\${proj_containers}" | wc -l) containers del proyecto."`);
     lines.push(`else`);
     lines.push(`  echo "  -> Container: \${CONTAINER}"`);
 
