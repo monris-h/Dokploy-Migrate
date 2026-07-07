@@ -345,6 +345,8 @@ function extractServicesFromEnv(
         dockerfile: (it["dockerfile"] as string | undefined) ?? undefined,
         dockerContextPath: (it["dockerContextPath"] as string | undefined) ?? undefined,
         dockerBuildStage: (it["dockerBuildStage"] as string | undefined) ?? undefined,
+        // -------- Volumenes declarados (de la API) --------
+        mounts: extractMounts(it),
       });
     }
   }
@@ -990,4 +992,38 @@ function slugName(name: string): string {
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/^-|-$/g, "") || "service"
   );
+}
+
+/**
+ * Extrae los mounts declarados por Dokploy para un servicio.
+ * Acepta varias variantes de nombres que puede devolver el API:
+ * Mounts, mounts, volumes. Cada mount puede traer Name, Source, Destination,
+ * Type, etc.
+ */
+function extractMounts(
+  it: Record<string, unknown>
+): ServiceSummary["mounts"] {
+  const raw = (it["Mounts"] ?? it["mounts"] ?? it["Volumes"] ?? it["volumes"]) as
+    | Array<Record<string, unknown>>
+    | undefined;
+  if (!Array.isArray(raw)) return undefined;
+
+  const out: NonNullable<ServiceSummary["mounts"]> = [];
+  for (const m of raw) {
+    const name = String(
+      m["Name"] ?? m["name"] ?? m["Source"] ?? m["source"] ?? m["VolumeName"] ?? ""
+    );
+    const destination = String(
+      m["Destination"] ?? m["destination"] ?? m["Target"] ?? m["target"] ?? m["MountPath"] ?? ""
+    );
+    const type = String(m["Type"] ?? m["type"] ?? "volume");
+    if (name || destination) {
+      out.push({
+        name,
+        destination,
+        type: type === "bind" ? "bind" : "volume",
+      });
+    }
+  }
+  return out.length > 0 ? out : undefined;
 }

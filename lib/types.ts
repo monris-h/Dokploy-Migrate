@@ -57,6 +57,8 @@ export type ServiceSummary = {
   dockerContextPath?: string;
   /** Stage especifico en multi-stage Dockerfile */
   dockerBuildStage?: string;
+  /** Volumenes declarados por Dokploy para este servicio (de la API). */
+  mounts?: Array<{ name: string; destination: string; type: "bind" | "volume" }>;
 };
 
 export type DatabaseType = "postgres" | "mysql" | "mariadb" | "mongo" | "redis";

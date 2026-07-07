@@ -157,8 +157,12 @@ export async function runBackup(args: string[]): Promise<void> {
           ? "compose"
           : "app";
     const dot = s.status === "running" ? "o" : ".";
+    const mountsStr =
+      s.mounts && s.mounts.length > 0
+        ? `  volumes: ${s.mounts.map((m) => `${m.name}->${m.destination}`).join(", ")}`
+        : "";
     process.stdout.write(
-      `   ${dot} ${s.name.padEnd(28)}  [${tag}]${s.image ? `  ${s.image}` : ""}\n`
+      `   ${dot} ${s.name.padEnd(28)}  [${tag}]${s.image ? `  ${s.image}` : ""}${mountsStr}\n`
     );
   }
 
