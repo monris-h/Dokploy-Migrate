@@ -522,13 +522,25 @@ async function createViaEndpoint<TId extends string>(
     idKeys: TId[];
   }
 ): Promise<{ ids: Record<TId, string>; raw: unknown }> {
+  // Algunos endpoints devuelven el id en variantes (id, uuid, project_id)
+  const altKeys = [
+    ...opts.idKeys,
+    "id",
+    "uuid",
+  ] as unknown as TId[];
+
   try {
     const raw = await dokployFetch<unknown>(conn, opts.restPath, {
       method: "POST",
       body: opts.body,
     });
-    const ids = extractIds(raw, opts.idKeys);
+    const ids = extractIds(raw, altKeys);
     if (Object.keys(ids).length > 0) return { ids, raw };
+    if (process.env.DEBUG_DOKPLOY) {
+      process.stderr.write(
+        `[DEBUG_DOKPLOY] ${opts.restPath} no devolvio ${opts.idKeys.join("/")}. Raw: ${JSON.stringify(raw).slice(0, 500)}\n`
+      );
+    }
   } catch {
     // cae a trpc
   }
@@ -541,10 +553,23 @@ async function createViaEndpoint<TId extends string>(
     body: { "0": { json: opts.body } },
   });
   const j = trpc?.[0]?.result?.data?.json;
-  if (!j) throw new Error(`Dokploy no devolvio ${opts.idKeys.join("/")} al crear servicio.`);
-  const ids = extractIds(j, opts.idKeys);
-  if (Object.keys(ids).length === 0)
+  if (!j) {
+    if (process.env.DEBUG_DOKPLOY) {
+      process.stderr.write(
+        `[DEBUG_DOKPLOY] ${opts.trpcPath} sin .result[0].data.json. Raw: ${JSON.stringify(trpc).slice(0, 500)}\n`
+      );
+    }
     throw new Error(`Dokploy no devolvio ${opts.idKeys.join("/")} al crear servicio.`);
+  }
+  const ids = extractIds(j, altKeys);
+  if (Object.keys(ids).length === 0) {
+    if (process.env.DEBUG_DOKPLOY) {
+      process.stderr.write(
+        `[DEBUG_DOKPLOY] ${opts.trpcPath} j=${JSON.stringify(j).slice(0, 500)}\n`
+      );
+    }
+    throw new Error(`Dokploy no devolvio ${opts.idKeys.join("/")} al crear servicio.`);
+  }
   return { ids, raw: trpc };
 }
 
@@ -569,18 +594,36 @@ function extractIds<TKey extends string>(
   return out;
 }
 
-/** Crea un proyecto nuevo. */
+/** Crea un proyecto nuevo. Si ya existe uno con ese nombre, lo reusa. */
 export async function dokployCreateProject(
   conn: Connection,
   opts: { name: string; description?: string }
 ): Promise<string> {
+  // Primero: si ya existe un proyecto con ese nombre, reusar
+  try {
+    const existing = await listProjects(conn);
+    const found = existing.find(
+      (p) => p.name.toLowerCase() === opts.name.toLowerCase()
+    );
+    if (found) {
+      if (process.env.DEBUG_DOKPLOY) {
+        process.stderr.write(
+          `[DEBUG_DOKPLOY] Proyecto "${opts.name}" ya existe, reusando projectId=${found.projectId}\n`
+        );
+      }
+      return found.projectId;
+    }
+  } catch {
+    // si falla el listado, intentar crear igual
+  }
+
   const { ids } = await createViaEndpoint(conn, {
     restPath: "/api/project.create",
     trpcPath: "/api/trpc/project.create?batch=1",
     body: { name: opts.name, description: opts.description ?? "" },
     idKeys: ["projectId"],
   });
-  return ids.projectId;
+  return ids.projectId ?? (ids as Record<string, string>).id ?? "";
 }
 
 // ------- Application (apps / web / Next, etc.) -------
